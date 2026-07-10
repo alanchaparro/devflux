@@ -132,13 +132,27 @@ def extract_files(content: str) -> dict[str, str]:
             elif not current_filename and block_content:
                 # No filename found — auto-generate from language
                 ext_map = {
-                    "python": "main.py", "py": "main.py",
-                    "javascript": "script.js", "js": "script.js",
-                    "html": "index.html", "css": "style.css",
-                    "bash": "script.sh", "sh": "script.sh",
-                    "json": "config.json", "yaml": "config.yaml", "yml": "config.yaml",
+                    "python": "py", "py": "py",
+                    "javascript": "js", "js": "js",
+                    "html": "html", "css": "css",
+                    "bash": "sh", "sh": "sh", "shell": "sh",
+                    "json": "json", "yaml": "yaml", "yml": "yaml",
+                    "typescript": "ts", "ts": "ts",
+                    "xml": "xml", "sql": "sql",
+                    "java": "java", "c": "c", "cpp": "cpp",
+                    "go": "go", "rust": "rs", "php": "php",
+                    "ruby": "rb", "markdown": "md", "md": "md",
                 }
-                fname = ext_map.get(block_lang.lower(), "output.txt")
+                # First try mapping language to extension
+                lang_lower = block_lang.lower().strip()
+                ext = ext_map.get(lang_lower)
+                if ext:
+                    fname = f"main.{ext}"
+                elif lang_lower:
+                    # Use language name directly as extension if unknown
+                    fname = f"main.{lang_lower}"
+                else:
+                    fname = "main.txt"
                 if fname.lower() not in GARBAGE_FILES and not is_garbage(fname, block_content):
                     files[fname] = block_content
             current_filename = None
@@ -153,9 +167,6 @@ def extract_files(content: str) -> dict[str, str]:
 
 
 # --- Pipeline Runner ---
-
-# Lesson 14: protection only for dev team
-PROTECT_TEAMS = {"dev"}
 
 
 class PipelineRunner:
@@ -187,10 +198,14 @@ class PipelineRunner:
         Lesson 16: never run in devflux's own source dir.
         Lesson 17: files go in Path.cwd(), run dirs in ~/.devflux/runs/.
 
+        BUG FIX: Load existing files from disk at start so the LLM can modify
+        them. Write files to disk after EACH role (not just at the end).
+        Removed 30% protection — it was a no-op and the concept is wrong:
+        when the user asks for modifications, files MUST be overwritten.
+
         Returns dict of extracted files.
         """
         teams = teams or []
-        protect = any(t in PROTECT_TEAMS for t in teams)
 
         # Lesson 16: anti-destruction protection
         if cwd is None:
@@ -202,11 +217,28 @@ class PipelineRunner:
                 f"({DEVFLUX_SRC_DIR}). Use un directorio de trabajo diferente."
             )
 
-        # Build context for each role
+        # BUG FIX: Load existing files from disk so the LLM knows what to modify.
+        # This is critical for second runs where the user asks for modifications.
+        existing_on_disk: dict[str, str] = {}
+        for fpath in cwd_resolved.rglob("*"):
+            if not fpath.is_file():
+                continue
+            # Skip hidden files, __pycache__, .git, etc.
+            rel = fpath.relative_to(cwd_resolved)
+            if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+                continue
+            # Only load text files (skip binary)
+            try:
+                content = fpath.read_text(encoding="utf-8")
+                existing_on_disk[str(rel).replace("\\", "/")] = content
+            except (UnicodeDecodeError, OSError):
+                continue
+
+        # Build context for each role, starting with files already on disk
         context: dict[str, Any] = {
             "user_input": user_input,
             "previous_roles": [],
-            "accumulated_files": {},
+            "accumulated_files": dict(existing_on_disk),
         }
 
         for role in roles:
@@ -243,23 +275,7 @@ class PipelineRunner:
                 else:
                     self._callback(role, "garbage", {"file": fname})
 
-            # Apply protection (Lesson 14): 30% similarity check only for dev team
-            if protect and context["accumulated_files"]:
-                for fname, fcontent in filtered.items():
-                    existing = context["accumulated_files"].get(fname)
-                    if existing and self._similarity(existing, fcontent) > 0.30:
-                        # Skip if too similar (minor changes only on dev team)
-                        # Actually: protect means don't OVERWRITE existing files with near-identical content
-                        # If similarity > 30%, the new content is probably a refinement → allow it
-                        # But if the new content would DESTROY an existing good file...
-                        # Lesson 14: protection 30% means don't overwrite if the new content
-                        # is more than 30% different from existing (could be a bug)
-                        # Actually: the original lesson says protection 30% only for dev, not bugs.
-                        # This means: protect against overwriting files that are < 30% similar
-                        # (i.e., completely different content replacing existing work)
-                        pass  # We'll just accumulate all non-garbage
-
-            # Accumulate
+            # Accumulate (overwrite existing files — user asked for modifications)
             context["accumulated_files"].update(filtered)
             context["previous_roles"].append({
                 "role": role,
@@ -267,6 +283,17 @@ class PipelineRunner:
                 "elapsed": response.elapsed,
                 "files_extracted": list(filtered.keys()),
             })
+
+            # BUG FIX: Write files to disk AFTER EACH ROLE (not just at the end).
+            # This ensures:
+            # 1. Files survive even if the pipeline crashes later
+            # 2. Subsequent roles can read them from disk
+            # 3. The TUI can show diffs against the actual disk content
+            for fname, fcontent in filtered.items():
+                fpath = cwd_resolved / fname
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                with open(fpath, "w", encoding="utf-8") as fh:
+                    fh.write(fcontent)
 
             # Callback with results
             self._callback(role, "done", {
@@ -278,14 +305,6 @@ class PipelineRunner:
             })
 
         self.files = context["accumulated_files"]
-
-        # Write files to disk (Lesson 17)
-        for fname, fcontent in self.files.items():
-            fpath = cwd_resolved / fname
-            fpath.parent.mkdir(parents=True, exist_ok=True)
-            with open(fpath, "w", encoding="utf-8") as fh:
-                fh.write(fcontent)
-
         return self.files
 
     def _call_with_retry(self, messages: list[dict[str, str]], max_retries: int = 2) -> LLMResponse:
@@ -302,18 +321,6 @@ class PipelineRunner:
                 # Last attempt failed — return empty response
                 return LLMResponse(content="", tokens=0, elapsed=0.0)
         return LLMResponse(content="", tokens=0, elapsed=0.0)
-
-    @staticmethod
-    def _similarity(a: str, b: str) -> float:
-        """Rough similarity ratio between two strings (0.0 - 1.0)."""
-        if not a or not b:
-            return 0.0
-        # Simple character-level overlap
-        set_a = set(a.split())
-        set_b = set(b.split())
-        if not set_a or not set_b:
-            return 0.0
-        return len(set_a & set_b) / len(set_a | set_b)
 
     @staticmethod
     def _summarize_context(context: dict[str, Any]) -> str:
