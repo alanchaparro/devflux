@@ -458,7 +458,10 @@ class PipelineRunner:
         return issues
 
     def _call_with_retry(self, messages: list[dict[str, str]], max_retries: int = 2) -> LLMResponse:
-        """Call LLM with up to 2 retries and backoff."""
+        """Call LLM with up to 2 retries and backoff.
+
+        BUG FIX: Surface errors to callback instead of silently returning empty.
+        """
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -468,9 +471,14 @@ class PipelineRunner:
                 if attempt < max_retries:
                     time.sleep(1.0 * (attempt + 1))  # backoff: 1s, 2s
                     continue
-                # Last attempt failed — return empty response
-                return LLMResponse(content="", tokens=0, elapsed=0.0)
-        return LLMResponse(content="", tokens=0, elapsed=0.0)
+                # Last attempt failed — surface the error to the UI
+                error_msg = str(last_exc)
+                self._callback("__error__", "error", {"message": error_msg})
+                raise RuntimeError(f"LLM fallo despues de {max_retries + 1} intentos: {error_msg}") from last_exc
+        # Should not reach here, but just in case
+        error_msg = str(last_exc) if last_exc else "unknown error"
+        self._callback("__error__", "error", {"message": error_msg})
+        raise RuntimeError(f"LLM fallo: {error_msg}")
 
     @staticmethod
     def _summarize_context(context: dict[str, Any]) -> str:

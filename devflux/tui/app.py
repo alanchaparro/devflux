@@ -277,18 +277,70 @@ class DevFluxApp(App):
 
     # --- Wizard handling ---
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle Enter on input fields."""
+    def action_submit_input(self) -> None:
+        """Handle Enter key — BUG FIX: this method was MISSING.
+
+        The binding Binding("enter", "submit_input", priority=True) maps to
+        action_submit_input, but it didn't exist, so Enter was silently
+        swallowed by the App's binding handler before it could reach the
+        Input widget's on_input_submitted. This is the root cause of the
+        "TUI se queda colgado" bug.
+
+        Now we read the input value directly and dispatch it.
+        """
+        # Determine which input widget is active
+        if self._config is None:
+            # Wizard mode
+            try:
+                wizard_input = self.query_one("#wizard-input", Input)
+            except Exception:
+                return
+            value = wizard_input.value
+            if not value.strip():
+                return
+            wizard_input.value = ""
+            self._handle_wizard(value)
+            return
+
         # Check if we're in settings input mode (waiting for provider/model/key)
+        if self._settings_input_mode:
+            try:
+                chat_input = self.query_one("#chat-input", Input)
+            except Exception:
+                return
+            value = chat_input.value
+            chat_input.value = ""
+            self._handle_settings_input(value)
+            return
+
+        # Normal mode — submit chat
+        try:
+            chat_input = self.query_one("#chat-input", Input)
+        except Exception:
+            return
+        value = chat_input.value
+        if not value.strip():
+            return
+        # _handle_chat_submit clears input and logs the message itself
+        self._handle_chat_submit(value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter on input fields (fallback if binding doesn't intercept).
+
+        With priority=True binding, action_submit_input handles Enter first.
+        But if focus changes or binding doesn't fire, this is the safety net.
+        """
+        # Delegate to action_submit_input to avoid double-processing
+        # event.value is already available, use it directly
         if self._settings_input_mode and self._config is not None:
             self._handle_settings_input(event.value)
             return
 
         if self._config is None:
-            # Wizard mode
             self._handle_wizard(event.value)
         else:
-            # Normal mode — submit chat
+            # If we got here, the binding didn't fire, so handle it.
+            # _handle_chat_submit clears input and logs the message itself.
             self._handle_chat_submit(event.value)
 
     def _handle_wizard(self, value: str) -> None:
@@ -508,6 +560,13 @@ class DevFluxApp(App):
                 self.call_from_thread(
                     self._log_pipeline,
                     f"[red]  [SKIP] {role}: basura filtrada ({fname})[/red]"
+                )
+            # BUG FIX: Handle error status from _call_with_retry
+            elif status == "error":
+                msg = data.get("message", "error desconocido") if data else "error desconocido"
+                self.call_from_thread(
+                    self._log_pipeline,
+                    f"[bold red]  [ERROR] LLM: {msg}[/bold red]"
                 )
             # FEATURE 2: equipo-bugs integrity check callbacks
             elif status == "info":

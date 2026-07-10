@@ -28,7 +28,7 @@ class LLMClient:
     def __init__(self, config: DevFluxConfig, creds: CredentialsStore) -> None:
         self._config = config
         self._creds = creds
-        self._client = httpx.Client(timeout=300.0, follow_redirects=True)
+        self._client = httpx.Client(timeout=30.0, follow_redirects=True)
 
     @property
     def model(self) -> str:
@@ -61,11 +61,24 @@ class LLMClient:
             "stream": False,
         }
         start = time.time()
-        resp = self._client.post(url, json=payload, headers=self._headers())
+        try:
+            resp = self._client.post(url, json=payload, headers=self._headers())
+        except httpx.ConnectError as exc:
+            raise RuntimeError(f"No se pudo conectar a {url}. Verifica que el servidor este activo. Error: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(f"Timeout conectando a {url}. El servidor no responde en 30s. Error: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Error HTTP conectando a {url}: {exc}") from exc
         elapsed = time.time() - start
 
-        # Raise on HTTP errors
-        resp.raise_for_status()
+        # Raise on HTTP errors with context
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:500])
+            except Exception:
+                err_msg = resp.text[:500]
+            raise RuntimeError(f"HTTP {resp.status_code} de {url}: {err_msg}")
         data = resp.json()
 
         choice = data.get("choices", [{}])[0]
