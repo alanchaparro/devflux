@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devflux"
+version = "1.0.0"
+description = "TUI multi-agente para crear proyectos desde cero"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Alan Chaparro" }]
+dependencies = [
+    "textual>=0.40.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+devflux = "devflux.main:main"
+
+[tool.setuptools]
+packages = ["devflux", "devflux.core", "devflux.tui"]
+
+[tool.setuptools.package-data]
+devflux = ["prompts/**/*.j2", "tui/*.tcss"]

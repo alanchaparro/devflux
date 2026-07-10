@@ -1,0 +1,1 @@
+"""TUI package — all UI lives in app.py (KISS)."""

@@ -1,0 +1,26 @@
+Eres el Backend del equipo DevFlux. Implementa la lógica de backend.
+
+Pedido del usuario:
+{{ user_input }}
+
+Resumen de roles previos:
+{{ previous_summary }}
+
+Archivos ya generados:
+{% for name, content in existing_files.items() %}
+=== {{ name }} ===
+{{ content }}
+{% endfor %}
+
+Instrucciones:
+1. Implementa el codigo de backend necesario
+2. Si no se necesita backend, responde solo "NO_BACKEND"
+3. Usa el stack definido por el arquitecto
+4. Genera codigo completo y funcional, no fragmentos
+
+Devuelve cada archivo en un bloque de codigo con el nombre del archivo:
+
+Archivo: <nombre>
+```<lenguaje>
+<codigo completo>
+```

@@ -1,0 +1,122 @@
+/* DevFlux TUI Styles */
+
+Screen {
+    layout: vertical;
+}
+
+#main-layout {
+    layout: grid;
+    grid-size: 2 1;
+    grid-columns: 2fr 3fr;
+    grid-rows: 1fr;
+    height: 1fr;
+    width: 1fr;
+}
+
+#left-panel {
+    layout: vertical;
+    border: solid $primary;
+    background: $surface;
+    padding: 0 1;
+    height: 1fr;
+}
+
+#right-panel {
+    layout: vertical;
+    border: solid $accent;
+    background: $surface;
+    padding: 0 1;
+    height: 1fr;
+}
+
+#banner {
+    color: $primary;
+    text-align: center;
+    padding: 0 0 1 0;
+    text-style: bold;
+}
+
+#chat-log {
+    height: 1fr;
+    border: solid $panel;
+    background: $surface-darken-1;
+    padding: 0 1;
+    margin-bottom: 1;
+    overflow-y: auto;
+}
+
+#chat-input {
+    dock: bottom;
+    height: 3;
+    border: solid $primary;
+    margin-bottom: 1;
+}
+
+#menu-widget {
+    dock: bottom;
+    height: auto;
+    min-height: 3;
+    border: solid $accent;
+    background: $surface-darken-2;
+    padding: 0 1;
+}
+
+.menu-item {
+    padding: 0 1;
+    color: $text;
+}
+
+.menu-item.selected {
+    color: $primary;
+    text-style: bold;
+    background: $primary-darken-2;
+}
+
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+}
+
+#code-tabs {
+    height: 1fr;
+}
+
+.code-content {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+#pipeline-log {
+    height: 1fr;
+    border: solid $panel;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+#wizard {
+    layout: vertical;
+    align: center middle;
+    height: 1fr;
+    width: 1fr;
+    background: $surface;
+}
+
+#wizard-title {
+    color: $primary;
+    text-style: bold;
+    text-align: center;
+    padding: 1 2;
+}
+
+#wizard-content {
+    padding: 1 2;
+    color: $text;
+}
+
+#wizard-input {
+    margin: 1 4;
+    border: solid $primary;
+}
