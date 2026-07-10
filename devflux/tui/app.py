@@ -517,17 +517,22 @@ class DevFluxApp(App):
         intent = self._orchestrator.classify_intent(text)
 
         if intent == IntentType.QUESTION:
-            # General question — answer directly without pipeline
-            self._log_chat("[dim yellow]Orquestador: Pregunta detectada. No se ejecuta pipeline.[/dim yellow]")
-            self._log_chat("[dim cyan]DevFlux: Soy un generador de codigo. Para preguntas generales usa un chat normal. Si queres codigo, describe que queres construir.[/dim cyan]")
-            # Update pipeline-log so user sees feedback (not stuck on "esperando...")
+            # General question — answer directly with LLM, NO pipeline
+            self._log_chat("[dim yellow]Orquestador: Pregunta detectada. Respondiendo directamente...[/dim yellow]")
+            # Update pipeline-log so user sees feedback
             try:
                 plog = self.query_one("#pipeline-log", RichLog)
                 plog.clear()
-                plog.write("[dim]Pipeline: no se ejecuta (pregunta detectada). Describe que queres construir para generar codigo.[/dim]")
+                plog.write("[dim]Pipeline: no se ejecuta (pregunta detectada). Consultando LLM directamente...[/dim]")
             except Exception:
                 pass
+            # Run LLM call in background thread (network I/O — don't block UI)
+            self.is_running = True
+            self._answer_question(text)
             return
+
+        # Intent is CHAT or CODE — run pipeline normally
+        # (CHAT is NOT blocked: "hola mundo" should generate code via pipeline)
 
         # Intent is CODE — classify team and complexity
         teams, complexity = self._orchestrator.classify(text)
@@ -549,6 +554,84 @@ class DevFluxApp(App):
         self.is_running = True
         self._pipeline_count += 1
         self._run_pipeline(text, teams, complexity, roles)
+
+    @work(thread=True)
+    def _answer_question(self, user_input: str) -> None:
+        """Answer a general question directly with the LLM — NO pipeline, NO roles.
+
+        Called when classify_intent() returns IntentType.QUESTION.
+        Makes a single chat() call and displays the response in the chat log.
+        Lesson 7: call_from_thread for ALL UI updates from worker threads.
+        """
+        # Create fresh client for this call (avoid connection reuse issues)
+        try:
+            client = LLMClient(self._config, self._creds)  # type: ignore[arg-type]
+        except Exception as exc:
+            self.call_from_thread(
+                self._log_chat,
+                f"[bold red]ERROR creando cliente LLM: {exc}[/bold red]"
+            )
+            self.call_from_thread(self._question_done)
+            return
+
+        # Simple system prompt — DevFlux context but no pipeline roles
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Sos DevFlux, un asistente de desarrollo de software. "
+                    "Respondes preguntas de forma clara y concisa. "
+                    "Si el usuario pide codigo o un proyecto, decile que "
+                    "reformule como peticion de codigo para ejecutar el pipeline."
+                ),
+            },
+            {"role": "user", "content": user_input},
+        ]
+
+        try:
+            response = client.chat(messages)
+        except Exception as exc:
+            self.call_from_thread(
+                self._log_chat,
+                f"[bold red]ERROR consultando LLM: {exc}[/bold red]"
+            )
+            try:
+                client.close()
+            except Exception:
+                pass
+            self.call_from_thread(self._question_done)
+            return
+
+        # Close client after use
+        try:
+            client.close()
+        except Exception:
+            pass
+
+        # Display the answer in the chat log
+        answer = response.content if response.content else "(sin respuesta)"
+        self.call_from_thread(
+            self._log_chat,
+            f"[bold green]DevFlux:[/bold green] {answer}"
+        )
+        self.call_from_thread(
+            self._log_chat,
+            f"[dim]({response.tokens} tokens, {response.elapsed:.1f}s)[/dim]"
+        )
+
+        # Update pipeline log
+        self.call_from_thread(self._question_done)
+
+    def _question_done(self) -> None:
+        """Called when a direct question answer finishes (on UI thread)."""
+        self.is_running = False
+        try:
+            plog = self.query_one("#pipeline-log", RichLog)
+            plog.write(
+                "[bold green]Pregunta respondida directamente (sin pipeline).[/bold green]"
+            )
+        except Exception:
+            pass
 
     @work(thread=True)
     def _run_pipeline(
