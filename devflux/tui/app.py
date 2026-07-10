@@ -520,7 +520,9 @@ class DevFluxApp(App):
                 syntax = Syntax(content, "text", theme="monokai", line_numbers=False)
 
             # Lesson 3: TabPane with child as constructor arg
-            code_log = RichLog(id=f"code-{fname}", wrap=False)
+            # Sanitize ID: Textual IDs can't contain dots (index.html → index_html)
+            safe_id = f"code-{fname.replace('.', '_')}"
+            code_log = RichLog(id=safe_id, wrap=False)
             code_log.write(syntax)
 
             pane = TabPane(fname, code_log)
