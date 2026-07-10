@@ -487,19 +487,46 @@ class DevFluxApp(App):
                 elapsed = data.get("elapsed", 0.0) if data else 0.0
                 files = data.get("files", []) if data else []
                 file_contents = data.get("file_contents", {}) if data else {}
-                self.call_from_thread(
-                    self._log_pipeline,
-                    f"[green]  [OK] {role} ({elapsed:.1f}s, {tokens} tokens, {len(files)} archivos)[/green]"
-                )
+                file_diffs = data.get("file_diffs", {}) if data else {}
+                msg = data.get("message", "") if data else ""
+                # FEATURE 2: equipo-bugs done message
+                if role == "equipo-bugs":
+                    self.call_from_thread(
+                        self._log_pipeline,
+                        f"[green]  [BUGS] {msg or 'Integridad verificada'}[/green]"
+                    )
+                else:
+                    self.call_from_thread(
+                        self._log_pipeline,
+                        f"[green]  [OK] {role} ({elapsed:.1f}s, {tokens} tokens, {len(files)} archivos)[/green]"
+                    )
                 # Update code panel if files were generated
                 if files:
-                    self.call_from_thread(self._update_code_panel, files, file_contents, role)
+                    self.call_from_thread(self._update_code_panel, files, file_contents, role, file_diffs)
             elif status == "garbage":
                 fname = data.get("file", "?") if data else "?"
                 self.call_from_thread(
                     self._log_pipeline,
                     f"[red]  [SKIP] {role}: basura filtrada ({fname})[/red]"
                 )
+            # FEATURE 2: equipo-bugs integrity check callbacks
+            elif status == "info":
+                msg = data.get("message", "") if data else ""
+                self.call_from_thread(
+                    self._log_pipeline,
+                    f"[cyan]  [BUGS] {msg}[/cyan]"
+                )
+            elif status == "issues":
+                issues = data.get("issues", []) if data else []
+                self.call_from_thread(
+                    self._log_pipeline,
+                    f"[bold red]  [BUGS] Problemas de integridad encontrados ({len(issues)}):[/bold red]"
+                )
+                for issue in issues:
+                    self.call_from_thread(
+                        self._log_pipeline,
+                        f"[red]    - {issue.get('file', '?')}: {issue.get('type', '?')} — {issue.get('detail', '')}[/red]"
+                    )
 
         # BUG 1 FIX: Create fresh runner per pipeline run
         runner = PipelineRunner(
@@ -589,18 +616,23 @@ class DevFluxApp(App):
         filenames: list[str],
         file_contents: dict[str, str] | None = None,
         role: str = "",
+        file_diffs: dict[str, str] | None = None,
     ) -> None:
         """Update the right panel with code tabs.
 
-        BUG 1 fix: use file_contents from the callback (not disk read, which
-        fails because the runner writes to disk only after all roles finish).
-        BUG 2 fix: if the file already exists on disk, show a diff (green/red)
-        instead of just the new content.
+        BUG 2 FIX: Before adding a tab, remove any existing tab for the same
+        filename. Uses remove_pane() with the pane ID (not the child widget ID).
+        Only one tab per file should exist at any time.
+
+        FEATURE 1: If file_diffs contains an old version of the file, show a
+        red/green diff (difflib.unified_diff) instead of the full file content.
+        Auto-scroll to the first changed line in the diff.
         """
         if not self._config:
             return
 
         file_contents = file_contents or {}
+        file_diffs = file_diffs or {}
         cwd = Path.cwd()
         tabs = self.query_one("#code-tabs", TabbedContent)
 
@@ -617,16 +649,8 @@ class DevFluxApp(App):
                 else:
                     continue
 
-            # Check if file already exists on disk → show diff (BUG 2)
-            fpath = cwd / fname
-            old_content: str | None = None
-            if fpath.exists():
-                try:
-                    old_content = fpath.read_text(encoding="utf-8")
-                except Exception:
-                    old_content = None
-
             # Determine lexer for syntax highlighting
+            fpath = cwd / fname
             ext = fpath.suffix.lstrip(".")
             lexer_map = {
                 "py": "python", "js": "javascript", "ts": "typescript",
@@ -636,11 +660,14 @@ class DevFluxApp(App):
             }
             lexer = lexer_map.get(ext, "text")
 
-            # Build the display content: diff if file existed, else full content
+            # FEATURE 1: Check if we have an old version to diff against
+            old_content = file_diffs.get(fname)
             if old_content is not None and old_content != new_content:
-                # BUG 2: show diff with green/red highlighting
+                # Show diff with green/red highlighting + auto-scroll
                 display_content = self._build_diff(old_content, new_content)
+                is_diff = True
             else:
+                # Show full content with syntax highlighting
                 try:
                     display_content = Syntax(
                         new_content, lexer, theme="monokai", line_numbers=True
@@ -649,22 +676,71 @@ class DevFluxApp(App):
                     display_content = Syntax(
                         new_content, "text", theme="monokai", line_numbers=False
                     )
+                is_diff = False
 
-            # Lesson 3: TabPane with child as constructor arg
-            # Sanitize ID: Textual IDs can't contain dots (index.html → index_html)
-            safe_id = f"code-{fname.replace('.', '_')}"
-            # Remove existing tab with same ID if present (re-render)
+            # BUG 2 FIX: Remove existing tab for this file BEFORE adding a new one.
+            # The TabPane ID is generated from the title by TabbedContent._generate_tab_id.
+            # We need to find and remove the existing pane properly.
+            safe_id = fname.replace('.', '_').replace('/', '_').replace('\\', '_')
+            pane_id = f"tab-{safe_id}"
+
+            # Try to remove existing pane by ID
             try:
-                existing = tabs.query_one(f"#{safe_id}")
-                existing.remove()
+                existing_pane = tabs.get_pane(pane_id)
+                if existing_pane is not None:
+                    tabs.remove_pane(pane_id)
             except Exception:
                 pass
 
-            code_log = RichLog(id=safe_id, wrap=False)
+            # Also try to find and remove any TabPane whose title matches fname
+            # (covers cases where auto-generated IDs differ)
+            try:
+                for pane in tabs.query(TabPane):
+                    # TabPane stores title in _title (a Text or str)
+                    pane_title = str(pane._title)
+                    if pane_title == fname:
+                        tabs.remove_pane(pane.id if pane.id else pane)
+                        break
+            except Exception:
+                pass
+
+            # Create the code display widget
+            # Lesson: IDs can't contain dots — use sanitized ID
+            code_log = RichLog(id=f"code-{safe_id}", wrap=False, markup=True)
             code_log.write(display_content)
 
-            pane = TabPane(fname, code_log)
+            # Lesson 3: TabPane with child as constructor arg
+            pane = TabPane(fname, code_log, id=pane_id)
             tabs.add_pane(pane)
+
+            # FEATURE 1: Auto-scroll to the first changed line in the diff
+            if is_diff and isinstance(display_content, Text):
+                # Find the first line starting with @@ (hunk header) or -/+
+                scroll_line = 0
+                for i, line in enumerate(display_content.plain.split("\n")):
+                    if line.startswith("@@") or line.startswith("+") or line.startswith("-"):
+                        if not line.startswith("+++") and not line.startswith("---"):
+                            scroll_line = i
+                            break
+                # Scroll the RichLog to the changed section
+                # RichLog inherits scroll_y from ScrollableContainer.
+                # Each line is approximately 1 unit of scroll in the vertical direction.
+                if scroll_line > 0:
+                    try:
+                        # Use scroll_relative to move to the approximate position
+                        code_log.scroll_relative(y=scroll_line, animate=False)
+                    except Exception:
+                        try:
+                            # Fallback: scroll to a specific y coordinate
+                            code_log.scroll_to(y=scroll_line, animate=False)
+                        except Exception:
+                            pass
+
+            # Activate the newly added tab
+            try:
+                tabs.active = pane_id
+            except Exception:
+                pass
 
     def _build_diff(self, old: str, new: str) -> Text:
         """Build a Rich Text with diff highlighting (green=added, red=removed)."""

@@ -6,7 +6,7 @@ Pedido del usuario:
 Resumen de roles previos:
 {{ previous_summary }}
 
-Archivos ya generados:
+Archivos existentes (MODIFICA estos, NO crees archivos nuevos con el mismo nombre):
 {% for name, content in existing_files.items() %}
 === {{ name }} ===
 {{ content }}
@@ -17,10 +17,12 @@ Instrucciones:
 2. Usa HTML semantico y CSS moderno
 3. Haz la interfaz responsive y atractiva
 4. Genera codigo completo, no fragmentos
+5. Si un archivo ya existe, devuelve la version MODIFICADA completa del archivo con el mismo nombre
+6. NO crees archivos nuevos si ya existe uno con ese nombre — modifica el existente
 
 Devuelve cada archivo en un bloque de codigo con el nombre del archivo:
 
 Archivo: <nombre>
 ```<lenguaje>
 <codigo completo>
-```
+```===

@@ -6,7 +6,7 @@ Pedido del usuario:
 Resumen de roles previos:
 {{ previous_summary }}
 
-Archivos generados:
+Archivos existentes (MODIFICA estos, NO crees archivos nuevos con el mismo nombre):
 {% for name, content in existing_files.items() %}
 === {{ name }} ===
 {{ content }}
@@ -16,7 +16,7 @@ Instrucciones:
 1. Integra todos los archivos generados
 2. Verifica que no haya conflictos entre archivos
 3. Asegura que el proyecto funcione completo
-4. Genera la version final de cada archivo
+4. Genera la version final de cada archivo existente
 
 Devuelve cada archivo FINAL en bloques de codigo:
 

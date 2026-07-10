@@ -217,8 +217,10 @@ class PipelineRunner:
                 f"({DEVFLUX_SRC_DIR}). Use un directorio de trabajo diferente."
             )
 
-        # BUG FIX: Load existing files from disk so the LLM knows what to modify.
+        # BUG 1 FIX: Load existing files from disk so the LLM knows what to modify.
         # This is critical for second runs where the user asks for modifications.
+        # We also track which files existed BEFORE this run so the callback can
+        # show diffs (FEATURE 1).
         existing_on_disk: dict[str, str] = {}
         for fpath in cwd_resolved.rglob("*"):
             if not fpath.is_file():
@@ -234,11 +236,15 @@ class PipelineRunner:
             except (UnicodeDecodeError, OSError):
                 continue
 
+        # Track which files existed before the run (for diff display)
+        files_before_run: set[str] = set(existing_on_disk.keys())
+
         # Build context for each role, starting with files already on disk
         context: dict[str, Any] = {
             "user_input": user_input,
             "previous_roles": [],
             "accumulated_files": dict(existing_on_disk),
+            "files_before_run": files_before_run,
         }
 
         for role in roles:
@@ -284,7 +290,21 @@ class PipelineRunner:
                 "files_extracted": list(filtered.keys()),
             })
 
-            # BUG FIX: Write files to disk AFTER EACH ROLE (not just at the end).
+            # BUG 1 FIX: Capture old content BEFORE overwriting on disk.
+            # FEATURE 1: Pass old content to callback so the TUI can show a diff.
+            file_diffs: dict[str, str] = {}  # fname -> old content (if file existed)
+            for fname, fcontent in filtered.items():
+                fpath = cwd_resolved / fname
+                old = None
+                if fpath.exists():
+                    try:
+                        old = fpath.read_text(encoding="utf-8")
+                    except Exception:
+                        old = None
+                if old is not None and old != fcontent:
+                    file_diffs[fname] = old
+
+            # BUG 1 FIX: Write files to disk AFTER EACH ROLE (not just at the end).
             # This ensures:
             # 1. Files survive even if the pipeline crashes later
             # 2. Subsequent roles can read them from disk
@@ -296,16 +316,136 @@ class PipelineRunner:
                     fh.write(fcontent)
 
             # Callback with results
+            # FEATURE 1: include file_diffs so the TUI can show red/green diff
             self._callback(role, "done", {
                 "tokens": response.tokens,
                 "elapsed": response.elapsed,
                 "files": list(filtered.keys()),
                 "file_contents": dict(filtered),
+                "file_diffs": file_diffs,
                 "content_preview": response.content[:200],
             })
 
         self.files = context["accumulated_files"]
+
+        # FEATURE 2: Chain equipo-bugs integrity check after dev pipeline
+        if "dev" in teams and self.files:
+            self._callback("equipo-bugs", "start", None)
+            self._callback("equipo-bugs", "info", {"message": "Verificando integridad del proyecto..."})
+            integrity_issues = self._run_integrity_check(cwd_resolved)
+            if integrity_issues:
+                self._callback("equipo-bugs", "issues", {"issues": integrity_issues})
+            self._callback("equipo-bugs", "done", {
+                "message": "Integridad OK" if not integrity_issues else f"Integridad: {len(integrity_issues)} problemas",
+            })
+
         return self.files
+
+    def _run_integrity_check(self, cwd: Path) -> list[dict[str, str]]:
+        """FEATURE 2: Run a programmatic integrity check on generated files.
+
+        Checks:
+        - Python files: py_compile
+        - HTML files: basic tag balance
+        - JS files: basic brace balance
+        - JSON files: json.loads
+        - YAML files: yaml.safe_load
+
+        Returns list of issues found (empty list = all OK).
+        """
+        import json as json_module
+        import py_compile as py_compile_module
+        import yaml as yaml_module
+
+        issues: list[dict[str, str]] = []
+
+        for fpath in cwd.rglob("*"):
+            if not fpath.is_file():
+                continue
+            rel = fpath.relative_to(cwd)
+            # Skip hidden/devflux dirs
+            if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+                continue
+            rel_str = str(rel).replace("\\", "/")
+            ext = fpath.suffix.lstrip(".")
+
+            try:
+                content = fpath.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+
+            # Python: py_compile check
+            if ext == "py":
+                try:
+                    py_compile_module.compile(str(fpath), doraise=True)
+                except py_compile_module.PyCompileError as exc:
+                    issues.append({
+                        "file": rel_str,
+                        "type": "python_syntax",
+                        "detail": str(exc),
+                    })
+
+            # HTML: basic tag balance
+            elif ext == "html":
+                # Count opening and closing tags for major elements
+                open_tags = re.findall(r"<(?:div|span|ul|ol|li|table|tr|td|th|form|select|body|head|html|script|style)\b[^>]*>", content, re.IGNORECASE)
+                close_tags = re.findall(r"</(?:div|span|ul|ol|li|table|tr|td|th|form|select|body|head|html|script|style)\s*>", content, re.IGNORECASE)
+                if len(open_tags) != len(close_tags):
+                    issues.append({
+                        "file": rel_str,
+                        "type": "html_tag_balance",
+                        "detail": f"Tags abiertos: {len(open_tags)}, cerrados: {len(close_tags)}",
+                    })
+                # Check for unclosed script/style tags
+                if content.count("<script") > content.count("</script>"):
+                    issues.append({
+                        "file": rel_str,
+                        "type": "html_unclosed_script",
+                        "detail": f"Scripts abiertos: {content.count('<script')}, cerrados: {content.count('</script>')}",
+                    })
+
+            # JS: basic brace balance
+            elif ext in ("js", "ts", "jsx", "tsx"):
+                open_braces = content.count("{")
+                close_braces = content.count("}")
+                open_parens = content.count("(")
+                close_parens = content.count(")")
+                if open_braces != close_braces:
+                    issues.append({
+                        "file": rel_str,
+                        "type": "js_brace_balance",
+                        "detail": f"Llaves: {open_braces} abiertas, {close_braces} cerradas",
+                    })
+                if open_parens != close_parens:
+                    issues.append({
+                        "file": rel_str,
+                        "type": "js_paren_balance",
+                        "detail": f"Parentesis: {open_parens} abiertos, {close_parens} cerrados",
+                    })
+
+            # JSON: json.loads
+            elif ext == "json":
+                try:
+                    json_module.loads(content)
+                except json_module.JSONDecodeError as exc:
+                    issues.append({
+                        "file": rel_str,
+                        "type": "json_parse",
+                        "detail": str(exc),
+                    })
+
+            # YAML: yaml.safe_load
+            elif ext in ("yaml", "yml"):
+                try:
+                    yaml_module.safe_load(content)
+                except yaml_module.YAMLError as exc:
+                    issues.append({
+                        "file": rel_str,
+                        "type": "yaml_parse",
+                        "detail": str(exc),
+                    })
+
+        return issues
 
     def _call_with_retry(self, messages: list[dict[str, str]], max_retries: int = 2) -> LLMResponse:
         """Call LLM with up to 2 retries and backoff."""

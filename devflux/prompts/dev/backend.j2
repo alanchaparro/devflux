@@ -6,7 +6,7 @@ Pedido del usuario:
 Resumen de roles previos:
 {{ previous_summary }}
 
-Archivos ya generados:
+Archivos existentes (MODIFICA estos, NO crees archivos nuevos con el mismo nombre):
 {% for name, content in existing_files.items() %}
 === {{ name }} ===
 {{ content }}
@@ -17,10 +17,11 @@ Instrucciones:
 2. Si no se necesita backend, responde solo "NO_BACKEND"
 3. Usa el stack definido por el arquitecto
 4. Genera codigo completo y funcional, no fragmentos
+5. Si un archivo ya existe, devuelve la version MODIFICADA completa con el mismo nombre
 
 Devuelve cada archivo en un bloque de codigo con el nombre del archivo:
 
 Archivo: <nombre>
 ```<lenguaje>
 <codigo completo>
-```
+```===
