@@ -53,8 +53,6 @@ from textual.widgets import (
     Footer,
     Static,
     Input,
-    TabbedContent,
-    TabPane,
     RichLog,
 )
 from textual.reactive import reactive
@@ -167,6 +165,67 @@ class MenuWidget(Static):
             event.stop()
 
 
+class FileListWidget(Static):
+    """File list for the code panel — NO TabbedContent, NO dynamic IDs.
+
+    Uses j/k or up/down to navigate, Enter to select.
+    Lesson 6: can_focus=True for on_key to work.
+    """
+
+    can_focus = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._files: list[str] = []
+        self._selected = 0
+
+    def set_files(self, files: list[str]) -> None:
+        """Update the file list. Preserve selection if possible."""
+        self._files = files
+        if self._selected >= len(files):
+            self._selected = max(0, len(files) - 1)
+        self.refresh()
+
+    def render(self) -> str:
+        if not self._files:
+            return "[dim](sin archivos)[/dim]"
+        lines = ["[bold]Archivos:[/bold]"]
+        for i, fname in enumerate(self._files):
+            marker = ">" if i == self._selected else " "
+            if i == self._selected:
+                lines.append(f"{marker} [bold cyan]{fname}[/bold cyan]")
+            else:
+                lines.append(f"{marker} {fname}")
+        return "\n".join(lines)
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        from textual.events import Key
+        if not isinstance(event, Key):
+            return
+        key = event.key
+        if key in ("up", "k"):
+            if self._files:
+                self._selected = (self._selected - 1) % len(self._files)
+                self.refresh()
+                app = self.app
+                if hasattr(app, '_show_selected_file'):
+                    app._show_selected_file()
+            event.prevent_default()
+            event.stop()
+        elif key in ("down", "j"):
+            if self._files:
+                self._selected = (self._selected + 1) % len(self._files)
+                self.refresh()
+                app = self.app
+                if hasattr(app, '_show_selected_file'):
+                    app._show_selected_file()
+            event.prevent_default()
+            event.stop()
+        elif key == "enter":
+            event.prevent_default()
+            event.stop()
+
+
 class DevFluxApp(App):
     """DevFlux TUI — all UI in one file (KISS)."""
 
@@ -180,6 +239,9 @@ class DevFluxApp(App):
         Binding("escape", "close_menu", "Cerrar", priority=True),
         Binding("ctrl+s", "toggle_menu", "Menu", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
+        # File navigation in code panel (no priority — only when focused on file list)
+        Binding("j", "next_file", "Sig. archivo"),
+        Binding("k", "prev_file", "Prev archivo"),
     ]
 
     # Reactive state (NOT using _context — Lesson 2)
@@ -202,6 +264,10 @@ class DevFluxApp(App):
         self._pipeline_count = 0
         # Settings state: track if we're waiting for input (provider/model/key)
         self._settings_input_mode: str | None = None
+        # BUG 2 DEFINITIVE FIX: NO TabbedContent — use file list + RichLog
+        # Store file contents keyed by filename for display
+        self._code_files: dict[str, Any] = {}  # fname -> (display_content, is_diff)
+        self._code_file_order: list[str] = []  # ordered list of filenames
 
     def compose(self) -> ComposeResult:
         """Compose the main layout."""
@@ -244,10 +310,11 @@ class DevFluxApp(App):
                 RichLog(id="pipeline-log", wrap=True, markup=True),
                 id="left-panel",
             ),
-            # Right Panel (60%) — code with tabs
+            # Right Panel (60%) — file list + code viewer (NO TabbedContent)
             Vertical(
                 Static("[bold]Codigo / Diffs[/bold]", id="code-header"),
-                TabbedContent(id="code-tabs"),
+                FileListWidget(),
+                RichLog(id="code-viewer", wrap=False, markup=True),
                 id="right-panel",
             ),
             id="main-layout",
@@ -679,15 +746,12 @@ class DevFluxApp(App):
         role: str = "",
         file_diffs: dict[str, str] | None = None,
     ) -> None:
-        """Update the right panel with code tabs.
+        """Update the right panel with code content.
 
-        BUG 2 FIX: Before adding a tab, remove any existing tab for the same
-        filename. Uses remove_pane() with the pane ID (not the child widget ID).
-        Only one tab per file should exist at any time.
-
-        FEATURE 1: If file_diffs contains an old version of the file, show a
-        red/green diff (difflib.unified_diff) instead of the full file content.
-        Auto-scroll to the first changed line in the diff.
+        BUG 2 DEFINITIVE FIX: NO TabbedContent, NO TabPane, NO dynamic IDs.
+        Uses a simple file list (FileListWidget) + a single RichLog (code-viewer).
+        Files are stored in _code_files dict and displayed on selection.
+        This completely avoids Textual's auto-generated ID collision.
         """
         if not self._config:
             return
@@ -695,7 +759,6 @@ class DevFluxApp(App):
         file_contents = file_contents or {}
         file_diffs = file_diffs or {}
         cwd = Path.cwd()
-        tabs = self.query_one("#code-tabs", TabbedContent)
 
         for fname in filenames:
             new_content = file_contents.get(fname, "")
@@ -721,20 +784,17 @@ class DevFluxApp(App):
             }
             lexer = lexer_map.get(ext, "text")
 
-            # FEATURE 1: Check if we have an old version to diff against
+            # Check if we have an old version to diff against
             old_content = file_diffs.get(fname)
             if old_content is not None and old_content != new_content:
-                # Show diff with green/red highlighting + auto-scroll
                 display_content = self._build_diff(old_content, new_content)
                 is_diff = True
-                # Debug: log that diff is being shown
                 try:
                     plog = self.query_one("#pipeline-log", RichLog)
                     plog.write(f"[dim]  [DIFF] {fname}: mostrando diff ({len(old_content.splitlines())} -> {len(new_content.splitlines())} lineas)[/dim]")
                 except Exception:
                     pass
             else:
-                # Show full content with syntax highlighting
                 try:
                     display_content = Syntax(
                         new_content, lexer, theme="monokai", line_numbers=True
@@ -745,82 +805,83 @@ class DevFluxApp(App):
                     )
                 is_diff = False
 
-            # BUG 2 FIX: Remove existing tab for this file BEFORE adding a new one.
-            # Textual's TabbedContent auto-generates pane IDs with prefix "--content-tab-".
-            # We search for existing TabPanes by title match, then remove by pane.id.
-            safe_id = fname.replace('.', '_').replace('/', '_').replace('\\', '_')
-            pane_id = f"tab-{safe_id}"
+            # Store content in dict — NO widget IDs, NO TabPane
+            self._code_files[fname] = (display_content, is_diff)
+            if fname not in self._code_file_order:
+                self._code_file_order.append(fname)
 
-            # Strategy 1: Try remove_pane with our known pane_id
-            try:
-                tabs.remove_pane(pane_id)
-            except Exception:
-                pass
+        # Update the file list widget
+        try:
+            file_list = self.query_one(FileListWidget)
+            file_list.set_files(self._code_file_order)
+            # Select the last added file
+            if filenames:
+                last_fname = filenames[-1]
+                if last_fname in self._code_file_order:
+                    file_list._selected = self._code_file_order.index(last_fname)
+                    file_list.refresh()
+        except Exception:
+            pass
 
-            # Strategy 2: Query all TabPanes and remove any whose title matches fname
-            # This catches cases where the pane was created with a different ID scheme
-            try:
-                for pane in tabs.query(TabPane):
-                    pane_title = str(pane.title) if hasattr(pane, 'title') else str(getattr(pane, '_title', ''))
-                    if pane_title == fname:
-                        tabs.remove_pane(pane.id)
-                        break
-            except Exception:
-                pass
+        # Show the last file in the RichLog
+        if filenames:
+            self._show_file(filenames[-1])
 
-            # Strategy 3: Remove orphaned ContentTab widgets by ID
-            # Textual creates ContentTab with ID "--content-tab-{pane_id}"
-            content_tab_id = f"--content-tab-{pane_id}"
-            try:
-                orphan = tabs.query_one(f"#{content_tab_id}")
-                orphan.remove()
-            except Exception:
-                pass
-
-            # Create the code display widget
-            # Lesson: IDs can't contain dots — use sanitized ID
-            # Remove any existing RichLog with the same ID to avoid duplicate widget error
-            code_log_id = f"code-{safe_id}"
-            try:
-                existing_log = self.query_one(f"#{code_log_id}")
-                existing_log.remove()
-            except Exception:
-                pass
-            code_log = RichLog(id=code_log_id, wrap=False, markup=True)
-            code_log.write(display_content)
-
-            # Lesson 3: TabPane with child as constructor arg
-            pane = TabPane(fname, code_log, id=pane_id)
-            tabs.add_pane(pane)
-
-            # FEATURE 1: Auto-scroll to the first changed line in the diff
+    def _show_file(self, fname: str) -> None:
+        """Display a specific file in the code-viewer RichLog."""
+        if fname not in self._code_files:
+            return
+        display_content, is_diff = self._code_files[fname]
+        try:
+            viewer = self.query_one("#code-viewer", RichLog)
+            viewer.clear()
+            viewer.write(display_content)
+            # Auto-scroll to first changed line in diffs
             if is_diff and isinstance(display_content, Text):
-                # Find the first line starting with @@ (hunk header) or -/+
                 scroll_line = 0
                 for i, line in enumerate(display_content.plain.split("\n")):
                     if line.startswith("@@") or line.startswith("+") or line.startswith("-"):
                         if not line.startswith("+++") and not line.startswith("---"):
                             scroll_line = i
                             break
-                # Scroll the RichLog to the changed section
-                # RichLog inherits scroll_y from ScrollableContainer.
-                # Each line is approximately 1 unit of scroll in the vertical direction.
                 if scroll_line > 0:
                     try:
-                        # Use scroll_relative to move to the approximate position
-                        code_log.scroll_relative(y=scroll_line, animate=False)
+                        viewer.scroll_relative(y=scroll_line, animate=False)
                     except Exception:
-                        try:
-                            # Fallback: scroll to a specific y coordinate
-                            code_log.scroll_to(y=scroll_line, animate=False)
-                        except Exception:
-                            pass
+                        pass
+        except Exception:
+            pass
 
-            # Activate the newly added tab
-            try:
-                tabs.active = pane_id
-            except Exception:
-                pass
+    def _show_selected_file(self) -> None:
+        """Show the currently selected file in the file list."""
+        try:
+            file_list = self.query_one(FileListWidget)
+            if file_list._files and 0 <= file_list._selected < len(file_list._files):
+                self._show_file(file_list._files[file_list._selected])
+        except Exception:
+            pass
+
+    def action_next_file(self) -> None:
+        """Navigate to next file in code panel."""
+        try:
+            file_list = self.query_one(FileListWidget)
+            if file_list._files:
+                file_list._selected = (file_list._selected + 1) % len(file_list._files)
+                file_list.refresh()
+                self._show_selected_file()
+        except Exception:
+            pass
+
+    def action_prev_file(self) -> None:
+        """Navigate to previous file in code panel."""
+        try:
+            file_list = self.query_one(FileListWidget)
+            if file_list._files:
+                file_list._selected = (file_list._selected - 1) % len(file_list._files)
+                file_list.refresh()
+                self._show_selected_file()
+        except Exception:
+            pass
 
     def _build_diff(self, old: str, new: str) -> Text:
         """Build a Rich Text with diff highlighting (green=added, red=removed)."""
