@@ -449,15 +449,17 @@ class DevFluxApp(App):
         # FEATURE 2: Classify intent BEFORE anything else
         intent = self._orchestrator.classify_intent(text)
 
-        if intent == IntentType.CHAT:
-            # Casual greeting — respond directly
-            self._log_chat("[dim cyan]DevFlux: Hola! Escribi tu idea para generar codigo, o presiona Ctrl+S para el menu.[/dim cyan]")
-            return
-
         if intent == IntentType.QUESTION:
             # General question — answer directly without pipeline
             self._log_chat("[dim yellow]Orquestador: Pregunta detectada. No se ejecuta pipeline.[/dim yellow]")
             self._log_chat("[dim cyan]DevFlux: Soy un generador de codigo. Para preguntas generales usa un chat normal. Si queres codigo, describe que queres construir.[/dim cyan]")
+            # Update pipeline-log so user sees feedback (not stuck on "esperando...")
+            try:
+                plog = self.query_one("#pipeline-log", RichLog)
+                plog.clear()
+                plog.write("[dim]Pipeline: no se ejecuta (pregunta detectada). Describe que queres construir para generar codigo.[/dim]")
+            except Exception:
+                pass
             return
 
         # Intent is CODE — classify team and complexity
