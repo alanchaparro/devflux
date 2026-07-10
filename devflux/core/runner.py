@@ -273,6 +273,7 @@ class PipelineRunner:
                 "tokens": response.tokens,
                 "elapsed": response.elapsed,
                 "files": list(filtered.keys()),
+                "file_contents": dict(filtered),
                 "content_preview": response.content[:200],
             })
 

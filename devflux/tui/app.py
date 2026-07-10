@@ -23,6 +23,7 @@ Lessons applied:
 
 from __future__ import annotations
 
+import difflib
 import time
 from pathlib import Path
 from typing import Any
@@ -415,13 +416,14 @@ class DevFluxApp(App):
                 tokens = data.get("tokens", 0) if data else 0
                 elapsed = data.get("elapsed", 0.0) if data else 0.0
                 files = data.get("files", []) if data else []
+                file_contents = data.get("file_contents", {}) if data else {}
                 self.call_from_thread(
                     self._log_pipeline,
                     f"[green]  [OK] {role} ({elapsed:.1f}s, {tokens} tokens, {len(files)} archivos)[/green]"
                 )
                 # Update code panel if files were generated
                 if files:
-                    self.call_from_thread(self._update_code_panel, files)
+                    self.call_from_thread(self._update_code_panel, files, file_contents, role)
             elif status == "garbage":
                 fname = data.get("file", "?") if data else "?"
                 self.call_from_thread(
@@ -482,27 +484,61 @@ class DevFluxApp(App):
         self.call_from_thread(self._pipeline_done, runner.total_tokens, elapsed, list(files.keys()))
 
     def _pipeline_done(self, tokens: int, elapsed: float, files: list[str]) -> None:
-        """Called when pipeline finishes (on UI thread)."""
-        self.is_running = False
+        """Called when pipeline finishes (on UI thread).
 
-    def _update_code_panel(self, filenames: list[str]) -> None:
-        """Update the right panel with code tabs."""
+        BUG 3 fix: update pipeline log from 'esperando...' to 'completado'.
+        """
+        self.is_running = False
+        try:
+            plog = self.query_one("#pipeline-log", RichLog)
+            plog.write(
+                f"[bold green]Pipeline: completado ({tokens} tokens, {elapsed:.1f}s, "
+                f"{len(files)} archivos)[/bold green]"
+            )
+        except Exception:
+            pass
+
+    def _update_code_panel(
+        self,
+        filenames: list[str],
+        file_contents: dict[str, str] | None = None,
+        role: str = "",
+    ) -> None:
+        """Update the right panel with code tabs.
+
+        BUG 1 fix: use file_contents from the callback (not disk read, which
+        fails because the runner writes to disk only after all roles finish).
+        BUG 2 fix: if the file already exists on disk, show a diff (green/red)
+        instead of just the new content.
+        """
         if not self._config:
             return
 
-        # Get the runner's files from the pipeline
-        # We need to read from CWD where files were written
+        file_contents = file_contents or {}
         cwd = Path.cwd()
         tabs = self.query_one("#code-tabs", TabbedContent)
 
         for fname in filenames:
+            new_content = file_contents.get(fname, "")
+            if not new_content:
+                # Fallback: try reading from disk
+                fpath = cwd / fname
+                if fpath.exists():
+                    try:
+                        new_content = fpath.read_text(encoding="utf-8")
+                    except Exception:
+                        continue
+                else:
+                    continue
+
+            # Check if file already exists on disk → show diff (BUG 2)
             fpath = cwd / fname
-            if not fpath.exists():
-                continue
-            try:
-                content = fpath.read_text(encoding="utf-8")
-            except Exception:
-                continue
+            old_content: str | None = None
+            if fpath.exists():
+                try:
+                    old_content = fpath.read_text(encoding="utf-8")
+                except Exception:
+                    old_content = None
 
             # Determine lexer for syntax highlighting
             ext = fpath.suffix.lstrip(".")
@@ -514,19 +550,56 @@ class DevFluxApp(App):
             }
             lexer = lexer_map.get(ext, "text")
 
-            try:
-                syntax = Syntax(content, lexer, theme="monokai", line_numbers=True)
-            except Exception:
-                syntax = Syntax(content, "text", theme="monokai", line_numbers=False)
+            # Build the display content: diff if file existed, else full content
+            if old_content is not None and old_content != new_content:
+                # BUG 2: show diff with green/red highlighting
+                display_content = self._build_diff(old_content, new_content)
+            else:
+                try:
+                    display_content = Syntax(
+                        new_content, lexer, theme="monokai", line_numbers=True
+                    )
+                except Exception:
+                    display_content = Syntax(
+                        new_content, "text", theme="monokai", line_numbers=False
+                    )
 
             # Lesson 3: TabPane with child as constructor arg
             # Sanitize ID: Textual IDs can't contain dots (index.html → index_html)
             safe_id = f"code-{fname.replace('.', '_')}"
+            # Remove existing tab with same ID if present (re-render)
+            try:
+                existing = tabs.query_one(f"#{safe_id}")
+                existing.remove()
+            except Exception:
+                pass
+
             code_log = RichLog(id=safe_id, wrap=False)
-            code_log.write(syntax)
+            code_log.write(display_content)
 
             pane = TabPane(fname, code_log)
             tabs.add_pane(pane)
+
+    def _build_diff(self, old: str, new: str) -> Text:
+        """Build a Rich Text with diff highlighting (green=added, red=removed)."""
+        old_lines = old.splitlines(keepends=False)
+        new_lines = new.splitlines(keepends=False)
+        diff = difflib.unified_diff(
+            old_lines, new_lines, lineterm="", n=3
+        )
+        text = Text()
+        for line in diff:
+            if line.startswith("+++") or line.startswith("---"):
+                text.append(line + "\n", style="bold")
+            elif line.startswith("@@"):
+                text.append(line + "\n", style="bold cyan")
+            elif line.startswith("+"):
+                text.append(line + "\n", style="green")
+            elif line.startswith("-"):
+                text.append(line + "\n", style="red")
+            else:
+                text.append(line + "\n", style="dim")
+        return text
 
     # --- Menu handling ---
 
