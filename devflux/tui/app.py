@@ -666,6 +666,12 @@ class DevFluxApp(App):
                 # Show diff with green/red highlighting + auto-scroll
                 display_content = self._build_diff(old_content, new_content)
                 is_diff = True
+                # Debug: log that diff is being shown
+                try:
+                    plog = self.query_one("#pipeline-log", RichLog)
+                    plog.write(f"[dim]  [DIFF] {fname}: mostrando diff ({len(old_content.splitlines())} -> {len(new_content.splitlines())} lineas)[/dim]")
+                except Exception:
+                    pass
             else:
                 # Show full content with syntax highlighting
                 try:
@@ -679,34 +685,47 @@ class DevFluxApp(App):
                 is_diff = False
 
             # BUG 2 FIX: Remove existing tab for this file BEFORE adding a new one.
-            # The TabPane ID is generated from the title by TabbedContent._generate_tab_id.
-            # We need to find and remove the existing pane properly.
+            # Textual's TabbedContent auto-generates pane IDs with prefix "--content-tab-".
+            # We search for existing TabPanes by title match, then remove by pane.id.
             safe_id = fname.replace('.', '_').replace('/', '_').replace('\\', '_')
             pane_id = f"tab-{safe_id}"
 
-            # Try to remove existing pane by ID
+            # Strategy 1: Try remove_pane with our known pane_id
             try:
-                existing_pane = tabs.get_pane(pane_id)
-                if existing_pane is not None:
-                    tabs.remove_pane(pane_id)
+                tabs.remove_pane(pane_id)
             except Exception:
                 pass
 
-            # Also try to find and remove any TabPane whose title matches fname
-            # (covers cases where auto-generated IDs differ)
+            # Strategy 2: Query all TabPanes and remove any whose title matches fname
+            # This catches cases where the pane was created with a different ID scheme
             try:
                 for pane in tabs.query(TabPane):
-                    # TabPane stores title in _title (a Text or str)
-                    pane_title = str(pane._title)
+                    pane_title = str(pane.title) if hasattr(pane, 'title') else str(getattr(pane, '_title', ''))
                     if pane_title == fname:
-                        tabs.remove_pane(pane.id if pane.id else pane)
+                        tabs.remove_pane(pane.id)
                         break
+            except Exception:
+                pass
+
+            # Strategy 3: Remove orphaned ContentTab widgets by ID
+            # Textual creates ContentTab with ID "--content-tab-{pane_id}"
+            content_tab_id = f"--content-tab-{pane_id}"
+            try:
+                orphan = tabs.query_one(f"#{content_tab_id}")
+                orphan.remove()
             except Exception:
                 pass
 
             # Create the code display widget
             # Lesson: IDs can't contain dots — use sanitized ID
-            code_log = RichLog(id=f"code-{safe_id}", wrap=False, markup=True)
+            # Remove any existing RichLog with the same ID to avoid duplicate widget error
+            code_log_id = f"code-{safe_id}"
+            try:
+                existing_log = self.query_one(f"#{code_log_id}")
+                existing_log.remove()
+            except Exception:
+                pass
+            code_log = RichLog(id=code_log_id, wrap=False, markup=True)
             code_log.write(display_content)
 
             # Lesson 3: TabPane with child as constructor arg

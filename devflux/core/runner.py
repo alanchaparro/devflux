@@ -41,7 +41,7 @@ def render_prompt(template_name: str, **kwargs: Any) -> str:
 
 # --- Garbage filter (Lesson 13) ---
 
-GARBAGE_FILES = {"output", "output.text", "output.txt", "output.md", "readme.md", "result", "result.txt"}
+GARBAGE_FILES = {"output", "output.text", "output.txt", "output.md", "readme.md", "result", "result.txt", "main.txt"}
 GARBAGE_PATTERNS = [
     # Only markdown without code blocks
     re.compile(r"^[^`]*$", re.MULTILINE),  # no backticks at all
@@ -54,6 +54,12 @@ def is_garbage(filename: str, content: str) -> bool:
 
     # Reject known garbage filenames
     if fname_lower in GARBAGE_FILES:
+        return True
+
+    # Reject .txt files that are likely LLM output (not real documentation)
+    # Allow .txt only if it has meaningful content (not just LLM chatter)
+    if fname_lower.endswith(".txt") and fname_lower not in ("requirements.txt", "changelog.txt", "license.txt"):
+        # .txt files are usually LLM-generated artifacts, not real code
         return True
 
     # Reject empty content
@@ -303,6 +309,10 @@ class PipelineRunner:
                         old = None
                 if old is not None and old != fcontent:
                     file_diffs[fname] = old
+
+            # Debug: log diff info to callback
+            if file_diffs:
+                self._callback(role, "info", {"message": f"Diff: {len(file_diffs)} archivo(s) modificado(s): {', '.join(file_diffs.keys())}"})
 
             # BUG 1 FIX: Write files to disk AFTER EACH ROLE (not just at the end).
             # This ensures:
