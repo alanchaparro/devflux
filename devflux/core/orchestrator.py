@@ -46,7 +46,7 @@ BUG_KEYWORDS = {"bug", "error", "no funciona", "falla", "fallando", "roto", "cra
 REPO_KEYWORDS = {"documentar", "analizar repo", "entender", "inventariar", "documentacion", "analize repo", "repo"}
 
 # Question detection keywords — if the input looks like a question, answer directly
-QUESTION_KEYWORDS = {"?", "que es", "qué es", "como funciona", "cómo funciona", "que es", "explica", "explain", "que significa", "qué significa", "diferencia", "difference", "por que", "por qué", "why", "cuando", "cuándo", "when", "donde", "dónde", "where", "quien", "quién", "who"}
+QUESTION_KEYWORDS = {"?", "que es", "qué es", "como funciona", "cómo funciona", "explica", "explain", "que significa", "qué significa", "diferencia", "difference", "por que", "por qué", "why", "cuando", "cuándo", "when", "donde", "dónde", "where", "quien", "quién", "who", "que ", "qué ", "como ", "cómo ", "cual ", "cuál ", "cuales ", "cuáles ", "puedes ", "podés ", "podrias ", "podrías ", "sabes ", "tenes ", "tenés ", "usaste ", "utilizaste ", "usas ", "usa ", "estas ", "estás ", "es ", "son ", "fue ", "era ", "hay ", "existe ", "deberia ", "debería "}
 
 # Casual/chat detection
 CHAT_KEYWORDS = {"hola", "hello", "hi", "buenas", "hey", "gracias", "thanks", "ok", "vale", "bien", "chau", "adios", "bye"}
@@ -73,25 +73,21 @@ class Orchestrator:
         """
         text = user_input.lower().strip()
 
-        # Check for casual/chat first (very short inputs with greetings)
-        if len(text.split()) <= 3 and any(kw in text for kw in CHAT_KEYWORDS):
-            return IntentType.CHAT
-
-        # Check for question patterns
-        # If the input ends with ? and is short, it's likely a question
-        if text.endswith("?") and len(text.split()) < 20:
-            # But if it contains code-generation keywords, it's still a code request
+        # Check for question patterns FIRST (before chat)
+        # "que archivos generaste?" should be QUESTION, not CHAT
+        # If the input ends with ?, it's likely a question
+        if text.endswith("?"):
             if not any(kw in text for kw in CREATE_KEYWORDS | BUG_KEYWORDS):
                 return IntentType.QUESTION
 
-        # Check for question keywords at the start
-        first_words = " ".join(text.split()[:4])
-        if any(kw in first_words for kw in QUESTION_KEYWORDS):
-            # But if it also has create/bug keywords, it's a code request
-            has_code = any(kw in text for kw in CREATE_KEYWORDS)
-            has_bug = any(kw in text for kw in BUG_KEYWORDS)
-            if not has_code and not has_bug:
-                return IntentType.QUESTION
+        # Check for question keywords ANYWHERE in the text (not just first 4 words)
+        has_question_kw = any(kw in text for kw in QUESTION_KEYWORDS)
+        has_code = any(kw in text for kw in CREATE_KEYWORDS)
+        has_bug = any(kw in text for kw in BUG_KEYWORDS)
+
+        # If it has question keywords and NO code/bug keywords, it's a question
+        if has_question_kw and not has_code and not has_bug:
+            return IntentType.QUESTION
 
         # Default: it's a code request
         return IntentType.CODE
