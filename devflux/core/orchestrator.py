@@ -202,7 +202,8 @@ class Orchestrator:
                           "por qué ", "quien ", "quién ", "puedes ", "podés ",
                           "podrias ", "podrías ", "sabes ", "tenes ", "tenés ",
                           "me ", "te ", "se ", "explica", "describe", "decime",
-                          "contame", "dame", "mostrame")
+                          "contame", "dame", "mostrame", "hay ", "existe ",
+                          "conoces ", "conocés ", "viste ", "escuchaste ")
         if any(text.startswith(s) for s in question_starts):
             # But if it also has explicit code keywords, it's CODE
             code_keywords = ("crea ", "crear ", "genera ", "generar ", "haceme ", "hacé ",
@@ -215,7 +216,8 @@ class Orchestrator:
         
         # Chat patterns
         chat_words = ("hola", "hello", "hi", "buenas", "hey", "gracias", "thanks",
-                     "ok", "vale", "bien", "chau", "adios", "bye")
+                     "ok", "vale", "bien", "chau", "adios", "bye", "buen", "bueno",
+                     "genial", "excelente", "perfecto", "saludos")
         if len(text.split()) <= 3 and any(w in text for w in chat_words):
             return IntentType.CHAT
         
