@@ -265,6 +265,13 @@ class DevFluxApp(App):
         # FEATURE: Memoria de sesion — track last user input for context saving
         self._last_user_input: str = ""
 
+        # FEATURE: Confirmacion interactiva antes de ejecutar el pipeline
+        self._confirm_mode: bool = False
+        self._confirm_options: list[tuple[str, str, str]] = []  # (label, description, action)
+        self._confirm_selected: int = 0
+        self._confirm_intent: IntentType = IntentType.CODE
+        self._confirm_text: str = ""
+
     def compose(self) -> ComposeResult:
         """Compose the main layout."""
         # Header
@@ -352,7 +359,13 @@ class DevFluxApp(App):
         "TUI se queda colgado" bug.
 
         Now we read the input value directly and dispatch it.
+
+        FEATURE 3: If in confirm mode, Enter is handled by on_key instead.
         """
+        # FEATURE 3: Don't process Enter if in confirm mode
+        if self._confirm_mode:
+            return
+
         # Determine which input widget is active
         if self._config is None:
             # Wizard mode
@@ -394,7 +407,13 @@ class DevFluxApp(App):
 
         With priority=True binding, action_submit_input handles Enter first.
         But if focus changes or binding doesn't fire, this is the safety net.
+
+        FEATURE 3: If in confirm mode, Enter is handled by on_key instead.
         """
+        # FEATURE 3: Don't process Enter if in confirm mode
+        if self._confirm_mode:
+            return
+
         # Delegate to action_submit_input to avoid double-processing
         # event.value is already available, use it directly
         if self._settings_input_mode and self._config is not None:
@@ -498,6 +517,7 @@ class DevFluxApp(App):
 
         BUG 1 FIX: Reset all state, clear pipeline log, create fresh client.
         FEATURE 2: Classify intent first, show preview, skip pipeline for questions.
+        FEATURE 3: Confirmacion interactiva — muestra opciones antes de ejecutar.
         """
         if not text.strip():
             return
@@ -517,44 +537,27 @@ class DevFluxApp(App):
         # FEATURE 2: Classify intent BEFORE anything else
         intent = self._orchestrator.classify_intent(text)
 
-        if intent == IntentType.QUESTION:
-            # General question — answer directly with LLM, NO pipeline
-            self._log_chat("[dim yellow]Orquestador: Pregunta detectada. Respondiendo directamente...[/dim yellow]")
-            # Update pipeline-log so user sees feedback
-            try:
-                plog = self.query_one("#pipeline-log", RichLog)
-                plog.clear()
-                plog.write("[dim]Pipeline: no se ejecuta (pregunta detectada). Consultando LLM directamente...[/dim]")
-            except Exception:
-                pass
-            # Run LLM call in background thread (network I/O — don't block UI)
-            self.is_running = True
-            self._answer_question(text)
-            return
+        # FEATURE 3: Enter confirm mode instead of executing directly
+        self._confirm_mode = True
+        self._confirm_text = text
+        self._confirm_intent = intent
+        self._confirm_selected = 0
 
-        # Intent is CHAT or CODE — run pipeline normally
-        # (CHAT is NOT blocked: "hola mundo" should generate code via pipeline)
+        # Build confirm options based on intent
+        intent_label = {
+            IntentType.CODE: "CODE (generar codigo)",
+            IntentType.QUESTION: "QUESTION (pregunta)",
+            IntentType.CHAT: "CHAT (conversacion)",
+        }.get(intent, "CODE")
 
-        # Intent is CODE — classify team and complexity
-        teams, complexity = self._orchestrator.classify(text)
-        roles = self._orchestrator.get_roles()
+        self._confirm_options = [
+            ("1", f"Generar codigo (pipeline)", "pipeline"),
+            ("2", f"Es una pregunta (responder directo)", "question"),
+            ("3", f"Reescribir mi idea", "rewrite"),
+        ]
 
-        # FEATURE 2: Show preview BEFORE executing
-        self._log_chat(f"[bold magenta]Orquestador: {self._orchestrator.preview()}[/bold magenta]")
-        self._log_chat(f"[dim]Roles: {', '.join(roles)}[/dim]")
-
-        # BUG 1 FIX: Clear pipeline log for new run
-        try:
-            plog = self.query_one("#pipeline-log", RichLog)
-            plog.clear()
-            plog.write(f"[dim]Pipeline #{self._pipeline_count + 1}: iniciando...[/dim]")
-        except Exception:
-            pass
-
-        # Start pipeline worker
-        self.is_running = True
-        self._pipeline_count += 1
-        self._run_pipeline(text, teams, complexity, roles)
+        # Show confirmation in pipeline log
+        self._show_confirmation()
 
     @work(thread=True)
     def _answer_question(self, user_input: str) -> None:
@@ -1297,6 +1300,170 @@ class DevFluxApp(App):
             self._log_chat("[yellow]No hay runs anteriores[/yellow]")
             return
         self._log_chat(last.summary())
+
+    # --- Confirmacion interactiva (FEATURE 3) ---
+
+    def _show_confirmation(self) -> None:
+        """Render confirmation options in the pipeline log.
+
+        Shows the detected intent and 3 options the user can navigate with ↑/↓/Enter.
+        The selected option is highlighted with bold cyan.
+        """
+        try:
+            plog = self.query_one("#pipeline-log", RichLog)
+            plog.clear()
+
+            intent_label = {
+                IntentType.CODE: "CODE (generar codigo)",
+                IntentType.QUESTION: "QUESTION (pregunta)",
+                IntentType.CHAT: "CHAT (conversacion)",
+            }.get(self._confirm_intent, "CODE")
+
+            plog.write(
+                f"[bold magenta]Orquestador: Detecte intencion {intent_label}[/bold magenta]"
+            )
+            plog.write("[bold]Que queres hacer?[/bold]")
+            plog.write("")  # blank line
+
+            # Render each option with highlight on selected
+            icons = ["✨", "💬", "✏️"]
+            for i, (num, desc, _action) in enumerate(self._confirm_options):
+                icon = icons[i] if i < len(icons) else "•"
+                if i == self._confirm_selected:
+                    plog.write(
+                        f"  [bold cyan]> [{num}] {icon} {desc}[/bold cyan]"
+                    )
+                else:
+                    plog.write(
+                        f"    [{num}] {icon} {desc}"
+                    )
+
+            plog.write("")
+            plog.write("[dim]Usa ↑/↓ para navegar, Enter para seleccionar, Esc para cancelar[/dim]")
+        except Exception:
+            pass  # Widget not ready
+
+    def on_key(self, event) -> None:  # type: ignore[override]
+        """Handle key events at the App level.
+
+        When in confirm mode, ↑/↓/Enter navigate the confirmation options.
+        Otherwise, delegate to default behavior.
+        """
+        from textual.events import Key
+
+        if not isinstance(event, Key):
+            return
+
+        if self._confirm_mode:
+            key = event.key
+            if key == "up":
+                self._confirm_selected = (self._confirm_selected - 1) % len(self._confirm_options)
+                self._show_confirmation()
+                event.prevent_default()
+                event.stop()
+            elif key == "down":
+                self._confirm_selected = (self._confirm_selected + 1) % len(self._confirm_options)
+                self._show_confirmation()
+                event.prevent_default()
+                event.stop()
+            elif key == "enter":
+                self._handle_confirm_select()
+                event.prevent_default()
+                event.stop()
+            elif key == "escape":
+                self._cancel_confirmation()
+                event.prevent_default()
+                event.stop()
+
+    def _handle_confirm_select(self) -> None:
+        """Execute the action chosen by the user in confirm mode."""
+        if not self._confirm_options:
+            return
+
+        _num, _desc, action = self._confirm_options[self._confirm_selected]
+        text = self._confirm_text
+
+        # Exit confirm mode
+        self._confirm_mode = False
+
+        if action == "pipeline":
+            # Run the full pipeline
+            self._log_chat(
+                f"[bold magenta]Orquestador: Ejecutando pipeline...[/bold magenta]"
+            )
+
+            # Classify team and complexity
+            teams, complexity = self._orchestrator.classify(text)
+            roles = self._orchestrator.get_roles()
+
+            # Show preview
+            self._log_chat(
+                f"[bold magenta]Orquestador: {self._orchestrator.preview()}[/bold magenta]"
+            )
+            self._log_chat(f"[dim]Roles: {', '.join(roles)}[/dim]")
+
+            # Clear pipeline log for new run
+            try:
+                plog = self.query_one("#pipeline-log", RichLog)
+                plog.clear()
+                plog.write(
+                    f"[dim]Pipeline #{self._pipeline_count + 1}: iniciando...[/dim]"
+                )
+            except Exception:
+                pass
+
+            # Start pipeline worker
+            self.is_running = True
+            self._pipeline_count += 1
+            self._run_pipeline(text, teams, complexity, roles)
+
+        elif action == "question":
+            # Answer directly with LLM
+            self._log_chat(
+                "[dim yellow]Orquestador: Respondiendo pregunta directamente...[/dim yellow]"
+            )
+            try:
+                plog = self.query_one("#pipeline-log", RichLog)
+                plog.clear()
+                plog.write(
+                    "[dim]Pipeline: no se ejecuta (pregunta). Consultando LLM directamente...[/dim]"
+                )
+            except Exception:
+                pass
+            self.is_running = True
+            self._answer_question(text)
+
+        elif action == "rewrite":
+            # Put the text back in the input for the user to rewrite
+            self._log_chat("[cyan]Reescribi tu idea en el chat...[/cyan]")
+            try:
+                plog = self.query_one("#pipeline-log", RichLog)
+                plog.clear()
+                plog.write("[dim]Pipeline: esperando nueva idea...[/dim]")
+            except Exception:
+                pass
+            # Restore the text to the input
+            try:
+                chat_input = self.query_one("#chat-input", Input)
+                chat_input.value = text
+                chat_input.focus()
+            except Exception:
+                pass
+
+    def _cancel_confirmation(self) -> None:
+        """Cancel confirmation mode and return to normal state."""
+        self._confirm_mode = False
+        self._log_chat("[dim]Confirmacion cancelada.[/dim]")
+        try:
+            plog = self.query_one("#pipeline-log", RichLog)
+            plog.clear()
+            plog.write("[dim]Pipeline: esperando...[/dim]")
+        except Exception:
+            pass
+        try:
+            self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
 
     # --- Logging helpers ---
 
