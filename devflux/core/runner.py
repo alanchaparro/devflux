@@ -41,7 +41,15 @@ def render_prompt(template_name: str, **kwargs: Any) -> str:
 
 # --- Garbage filter (Lesson 13) ---
 
-GARBAGE_FILES = {"output", "output.text", "output.txt", "output.md", "readme.md", "result", "result.txt", "main.txt", "run.sh", "start.sh", "main.sh", "setup.sh", "install.sh", "run.bat", "start.bat"}
+# BUG FIX: Reduced garbage list — only truly useless filenames.
+# Previously rejected .txt, .sh, readme.md, etc. which was too aggressive
+# and caused the pipeline to generate 0 files when the LLM produced valid output.
+GARBAGE_FILES = {
+    "output", "output.text", "output.txt", "output.md",
+    "result", "result.txt",
+    "main.txt",
+    "run.bat", "start.bat",
+}
 GARBAGE_PATTERNS = [
     # Only markdown without code blocks
     re.compile(r"^[^`]*$", re.MULTILINE),  # no backticks at all
@@ -49,34 +57,29 @@ GARBAGE_PATTERNS = [
 
 
 def is_garbage(filename: str, content: str) -> bool:
-    """Check if a file is garbage and should be rejected (Lesson 13)."""
+    """Check if a file is garbage and should be rejected (Lesson 13).
+
+    BUG FIX: Relaxed — no longer rejects .txt, .sh, or readme.md wholesale.
+    Only rejects truly empty/placeholder content and a few known junk filenames.
+    """
     fname_lower = filename.lower().strip()
 
-    # Reject known garbage filenames
+    # Reject known garbage filenames (reduced list)
     if fname_lower in GARBAGE_FILES:
-        return True
-
-    # Reject .txt files that are likely LLM output (not real documentation)
-    # Allow .txt only if it has meaningful content (not just LLM chatter)
-    if fname_lower.endswith(".txt") and fname_lower not in ("requirements.txt", "changelog.txt", "license.txt"):
-        # .txt files are usually LLM-generated artifacts, not real code
-        return True
-    # Reject .sh files — LLM generates run.sh/start.sh that the user didn't ask for
-    if fname_lower.endswith(".sh"):
-        # .txt files are usually LLM-generated artifacts, not real code
         return True
 
     # Reject empty content
     if not content.strip():
         return True
 
-    # Reject markdown-only blocks (just description, no actual code)
-    # If it's a .md file with only text and no code fences, it might be ok (docs)
-    # But if it claims to be code and has only markdown...
     stripped = content.strip()
 
     # Reject if it's just placeholder text
     if stripped.lower() in ("todo", "placeholder", "lorem ipsum", "n/a"):
+        return True
+
+    # Reject if content is too short to be meaningful (< 20 chars)
+    if len(stripped) < 20:
         return True
 
     return False
@@ -84,32 +87,178 @@ def is_garbage(filename: str, content: str) -> bool:
 
 # --- Code extraction ---
 
+# BUG FIX: More robust code block regex — handles Windows line endings,
+# optional language tag, and trailing whitespace/newlines.
 CODE_BLOCK_RE = re.compile(
-    r"```(?:[a-zA-Z0-9_+-]+)?\s*\n(.*?)```",
+    r"```(?:[a-zA-Z0-9_+#-]*)?\s*\r?\n(.*?)```",
     re.DOTALL,
 )
 
-FILE_HEADER_RE = re.compile(
-    r"(?:^|\n)\s*(?:#{1,3}\s*)?(?:File|Archivo|Fichero)\s*:\s*([^\n]+)",
-    re.IGNORECASE,
-)
+# BUG FIX: More patterns for filename detection.
+# The LLM might use various formats:
+#   Archivo: name
+#   File: name
+#   Fichero: name
+#   **name**
+#   ### name
+#   # name
+#   filename: name
+FILE_HEADER_PATTERNS = [
+    re.compile(r"(?:^|\n)\s*(?:#{1,3}\s*)?(?:Archivo|File|Fichero|Filename|Nombre)\s*:\s*([^\n]+)", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*\*\*([^*\n]+?)\*\*\s*\n", re.MULTILINE),
+    re.compile(r"(?:^|\n)\s*#{1,3}\s+([^\n`#]+?)(?:\s*\{[^}]*\})?\s*\n", re.MULTILINE),
+]
+
+# Debug directory for raw LLM responses
+DEBUG_DIR = Path.home() / ".devflux"
+DEBUG_LAST_RESPONSE = DEBUG_DIR / "debug_last_response.txt"
 
 
-def extract_files(content: str) -> dict[str, str]:
+def _save_debug_response(role: str, content: str) -> None:
+    """Save raw LLM response to debug file for diagnostics."""
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(DEBUG_LAST_RESPONSE, "w", encoding="utf-8") as f:
+            f.write(f"=== DevFlux Debug: Last LLM Response ===\n")
+            f.write(f"Role: {role}\n")
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Content length: {len(content)} chars\n")
+            f.write(f"Has code blocks: {'YES' if '```' in content else 'NO'}\n")
+            f.write(f"{'='*60}\n\n")
+            f.write(content)
+            f.write(f"\n\n{'='*60}\n")
+            f.write(f"END OF RESPONSE\n")
+    except Exception:
+        pass  # Debug logging should never crash the pipeline
+
+
+def _guess_extension_from_content(content: str, role: str = "") -> str:
+    """Guess file extension from content heuristics."""
+    stripped = content.strip().lower()
+
+    # Check first non-empty line for clues
+    first_line = ""
+    for line in content.split("\n"):
+        line = line.strip()
+        if line:
+            first_line = line.lower()
+            break
+
+    # HTML detection
+    if "<!doctype html" in stripped[:200] or "<html" in stripped[:200]:
+        return "html"
+    if first_line.startswith("<!doctype") or first_line.startswith("<html"):
+        return "html"
+
+    # CSS detection
+    if "{" in stripped and "}" in stripped and (":" in stripped) and not ("function" in stripped or "def " in stripped):
+        # Check if it looks like CSS (selectors with {})
+        css_indicators = ["font-", "margin", "padding", "color:", "background", "display:", "flex", "grid"]
+        if any(ind in stripped for ind in css_indicators):
+            return "css"
+
+    # JS detection
+    if any(kw in stripped[:500] for kw in ["const ", "let ", "var ", "function ", "import ", "export ", "require("]):
+        return "js"
+
+    # Python detection
+    if any(kw in stripped[:500] for kw in ["def ", "class ", "import ", "from ", "print(", "__name__"]):
+        return "py"
+
+    # JSON detection
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return "json"
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return "json"
+
+    # YAML detection
+    if ":" in stripped and not stripped.startswith("{") and not stripped.startswith("<"):
+        yaml_lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("#")]
+        if yaml_lines and all(":" in l for l in yaml_lines[:5]):
+            return "yaml"
+
+    # Markdown detection
+    if stripped.startswith("#") or "**" in stripped[:200]:
+        return "md"
+
+    # SQL detection
+    if any(kw in stripped[:200] for kw in ["select ", "create table", "insert into", "update ", "delete from"]):
+        return "sql"
+
+    # Default: based on role
+    role_map = {
+        "analista": "md",
+        "arquitecto": "md",
+        "planificador": "md",
+        "frontend": "html",
+        "backend": "py",
+        "qa": "md",
+        "reviewer": "md",
+        "integrador": "md",
+    }
+    return role_map.get(role, "txt")
+
+
+def _extract_filename_from_header(lines: list[str], block_start_idx: int) -> str | None:
+    """Try to extract a filename from headers before a code block."""
+    # Look backwards up to 15 lines
+    for j in range(block_start_idx - 1, max(block_start_idx - 15, -1), -1):
+        prev = lines[j].strip()
+        if not prev:
+            continue
+
+        # Pattern 1: "Archivo: name" / "File: name" / "Fichero: name" / "Filename: name"
+        m = re.match(r"(?:#{0,3}\s*)?(?:Archivo|File|Fichero|Filename|Nombre)\s*:\s*(.+)", prev, re.IGNORECASE)
+        if m:
+            fname = m.group(1).strip()
+            fname = fname.replace("\\", "/").split("/")[-1]
+            fname = fname.replace("`", "").strip()
+            if fname:
+                return fname
+
+        # Pattern 2: "**filename.ext**" (bold markdown)
+        m = re.match(r"\*\*([^*\n]+?)\*\*$", prev)
+        if m:
+            fname = m.group(1).strip()
+            if "." in fname and not fname.startswith("."):
+                return fname
+
+        # Pattern 3: "# filename" or "## filename" (markdown heading)
+        m = re.match(r"#{1,3}\s+([^\n`#]+)$", prev)
+        if m:
+            fname = m.group(1).strip()
+            # Only use as filename if it looks like a filename (has extension)
+            if "." in fname and not fname.startswith(".") and len(fname) < 80:
+                return fname
+
+    return None
+
+
+def extract_files(content: str, role: str = "") -> dict[str, str]:
     """Extract code files from LLM output.
 
-    Looks for 'Archivo: <name>' or 'File: <name>' followed by a fenced code block.
+    BUG FIX: Completely rewritten for robustness.
+    - Handles fenced code blocks with filename headers
+    - Falls back to saving entire response as a file if no code blocks found
+    - Auto-detects file type from content heuristics
+    - Saves debug output to ~/.devflux/debug_last_response.txt
+
     Returns dict[filename -> content].
     """
     files: dict[str, str] = {}
 
-    # Pattern: optional "Archivo: name" or "File: name" header, then a code fence
-    # We split on code fences first, then look backwards for the filename
+    if not content or not content.strip():
+        return files
+
+    # Save debug response
+    _save_debug_response(role, content)
+
     lines = content.split("\n")
-    current_filename: str | None = None
     in_block = False
     block_lines: list[str] = []
     block_lang = ""
+    current_filename: str | None = None
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -117,54 +266,59 @@ def extract_files(content: str) -> dict[str, str]:
         # Detect start of code fence
         if stripped.startswith("```") and not in_block:
             in_block = True
-            block_lang = stripped[3:].strip()
+            block_lang = stripped[3:].strip().lower()
             block_lines = []
-            # Look backwards for filename (up to 10 lines)
-            for j in range(i - 1, max(i - 15, -1), -1):
-                prev = lines[j].strip()
-                # Match "Archivo: name" or "File: name" or "Fichero: name"
-                m = re.match(r"(?:#{0,3}\s*)?(?:Archivo|File|Fichero)\s*:\s*(.+)", prev, re.IGNORECASE)
-                if m:
-                    fname = m.group(1).strip()
-                    fname = fname.replace("\\", "/").split("/")[-1]
-                    fname = fname.replace("`", "").strip()
-                    if fname and fname.lower() not in GARBAGE_FILES:
-                        current_filename = fname
-                    break
+            # Try to find filename from headers before this block
+            current_filename = _extract_filename_from_header(lines, i)
             continue
 
         # Detect end of code fence
         if stripped.startswith("```") and in_block:
             in_block = False
             block_content = "\n".join(block_lines).strip()
-            if current_filename and block_content:
-                files[current_filename] = block_content
-            elif not current_filename and block_content:
-                # No filename found — auto-generate from language
+
+            if not block_content:
+                current_filename = None
+                block_lang = ""
+                block_lines = []
+                continue
+
+            # Determine filename
+            fname: str | None = None
+
+            if current_filename:
+                fname = current_filename
+            elif block_lang:
+                # Auto-generate from language
                 ext_map = {
                     "python": "py", "py": "py",
-                    "javascript": "js", "js": "js",
+                    "javascript": "js", "js": "js", "jsx": "jsx",
+                    "typescript": "ts", "ts": "ts", "tsx": "tsx",
                     "html": "html", "css": "css",
                     "bash": "sh", "sh": "sh", "shell": "sh",
                     "json": "json", "yaml": "yaml", "yml": "yaml",
-                    "typescript": "ts", "ts": "ts",
                     "xml": "xml", "sql": "sql",
                     "java": "java", "c": "c", "cpp": "cpp",
                     "go": "go", "rust": "rs", "php": "php",
                     "ruby": "rb", "markdown": "md", "md": "md",
+                    "dockerfile": "dockerfile", "docker": "dockerfile",
+                    "makefile": "makefile", "toml": "toml",
+                    "ini": "ini", "cfg": "cfg", "conf": "conf",
+                    "env": "env", "txt": "txt",
                 }
-                # First try mapping language to extension
-                lang_lower = block_lang.lower().strip()
-                ext = ext_map.get(lang_lower)
+                ext = ext_map.get(block_lang)
                 if ext:
                     fname = f"main.{ext}"
-                elif lang_lower:
-                    # Use language name directly as extension if unknown
-                    fname = f"main.{lang_lower}"
                 else:
-                    fname = "main.txt"
-                if fname.lower() not in GARBAGE_FILES and not is_garbage(fname, block_content):
-                    files[fname] = block_content
+                    fname = f"main.{block_lang}"
+            else:
+                # No language, no filename — guess from content
+                ext = _guess_extension_from_content(block_content, role)
+                fname = f"main.{ext}"
+
+            if fname and fname.lower() not in GARBAGE_FILES and not is_garbage(fname, block_content):
+                files[fname] = block_content
+
             current_filename = None
             block_lang = ""
             block_lines = []
@@ -173,7 +327,83 @@ def extract_files(content: str) -> dict[str, str]:
         if in_block:
             block_lines.append(line)
 
+    # BUG FIX: Fallback — if no code blocks found, save entire response as a file.
+    # This handles roles like analista/arquitecto that produce markdown documents
+    # without code fences.
+    if not files:
+        ext = _guess_extension_from_content(content, role)
+        # Generate a meaningful filename based on role
+        role_to_fname = {
+            "analista": f"PRD.{ext}",
+            "arquitecto": f"architecture.{ext}",
+            "planificador": f"plan.{ext}",
+            "qa": f"qa_report.{ext}",
+            "reviewer": f"review.{ext}",
+            "integrador": f"integration.{ext}",
+        }
+        fname = role_to_fname.get(role, f"output.{ext}")
+
+        if not is_garbage(fname, content):
+            files[fname] = content
+
     return files
+    # the content type from the raw response and save it as a file.
+    # This handles cases where the LLM returns raw HTML/CSS/JS without fences.
+    if not files and content.strip():
+        fname, fcontent = _fallback_extract(content)
+        if fname and fcontent:
+            files[fname] = fcontent
+
+    return files
+
+
+def _fallback_extract(content: str) -> tuple[str | None, str | None]:
+    """Try to extract a file from raw content without code fences.
+    
+    Detects HTML, CSS, JavaScript, Python, and other common formats.
+    Returns (filename, content) or (None, None).
+    """
+    text = content.strip()
+    if not text:
+        return None, None
+    
+    # HTML detection: starts with <!DOCTYPE, <html, or contains <body, <div, etc.
+    if text.startswith('<!DOCTYPE') or text.startswith('<html') or text.startswith('<body'):
+        return 'index.html', text
+    if '<html' in text[:200] or '<body' in text[:200] or '<div' in text[:200]:
+        return 'index.html', text
+    
+    # CSS detection
+    if '{' in text and '}' in text and ':' in text:
+        # Check if it looks like CSS (selectors with {})
+        lines = text.split('\n')
+        css_score = 0
+        for line in lines[:20]:
+            stripped = line.strip()
+            if '{' in stripped and not stripped.startswith('//') and not stripped.startswith('#'):
+                css_score += 1
+            if ':' in stripped and ';' in stripped:
+                css_score += 1
+        if css_score >= 2:
+            return 'style.css', text
+    
+    # JavaScript detection
+    js_indicators = ['function ', 'const ', 'let ', 'var ', '=>', 'document.', 'window.', 'console.']
+    js_score = sum(1 for kw in js_indicators if kw in text[:500])
+    if js_score >= 2:
+        return 'script.js', text
+    
+    # Python detection
+    py_indicators = ['def ', 'import ', 'class ', 'print(', 'if __name__']
+    py_score = sum(1 for kw in py_indicators if kw in text[:500])
+    if py_score >= 2:
+        return 'main.py', text
+    
+    # Generic: if it has substantial content (>200 chars), save as output
+    if len(text) > 200:
+        return 'output.txt', text
+    
+    return None, None
 
 
 # --- Pipeline Runner ---
@@ -290,6 +520,15 @@ class PipelineRunner:
 
             self.total_tokens += response.tokens
             self.total_elapsed += response.elapsed
+
+            # DEBUG: Save raw LLM response for diagnostics
+            debug_dir = cwd_resolved / ".devflux"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_file = debug_dir / f"debug_{role}_response.txt"
+            try:
+                debug_file.write_text(response.content, encoding="utf-8")
+            except Exception:
+                pass
 
             # Extract files from response
             new_files = extract_files(response.content)
