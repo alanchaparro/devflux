@@ -4,12 +4,18 @@ FEATURE 2: Intelligent orchestrator that classifies user intent BEFORE executing
 - Detects general questions and responds directly (no pipeline needed)
 - Classifies code requests into teams (dev / bugs) and complexity levels
 - Shows a preview of the decision before running
+
+REFACTOR: classify_intent() now uses LLM instead of keyword matching.
+The LLM receives the user text and responds CODE, QUESTION or CHAT.
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .client import LLMClient
 
 
 class Complexity(Enum):
@@ -40,57 +46,81 @@ COMPLEXITY_TOKENS: dict[Complexity, int] = {
     Complexity.COMPLEX: 8192,
 }
 
-# Keywords for intent classification
+# Keywords for team selection (used by classify() — NOT by classify_intent())
 CREATE_KEYWORDS = {"crear", "hacer", "desarrollar", "construir", "generar", "armar", "montar", "build", "create", "make", "desarrollar una", "nuevo", "nueva", "codigo", "programa", "script", "clase", "componente", "pagina", "página", "app", "aplicacion", "aplicación", "web", "html", "css", "javascript", "react", "vue", "api", "endpoint"}
 BUG_KEYWORDS = {"bug", "error", "no funciona", "falla", "fallando", "roto", "crashea", "excepción", "exception", "fix", "corregir", "arreglar", "broken", "no se ve", "no carga", "pantalla en blanco", "crash", "stacktrace", "traceback"}
 REPO_KEYWORDS = {"documentar", "analizar repo", "entender", "inventariar", "documentacion", "analize repo", "repo"}
 
-# Question detection keywords — if the input looks like a question, answer directly
-QUESTION_KEYWORDS = {"?", "que es", "qué es", "como funciona", "cómo funciona", "explica", "explain", "que significa", "qué significa", "diferencia", "difference", "por que", "por qué", "why", "cuando", "cuándo", "when", "donde", "dónde", "where", "quien", "quién", "who", "que ", "qué ", "como ", "cómo ", "cual ", "cuál ", "cuales ", "cuáles ", "puedes ", "podés ", "podrias ", "podrías ", "sabes ", "tenes ", "tenés ", "usaste ", "utilizaste ", "usas ", "usa ", "estas ", "estás ", "es ", "son ", "fue ", "era ", "hay ", "existe ", "deberia ", "debería "}
+# NOTE: QUESTION_KEYWORDS and CHAT_KEYWORDS removed — intent classification now uses LLM.
 
-# Casual/chat detection
-CHAT_KEYWORDS = {"hola", "hello", "hi", "buenas", "hey", "gracias", "thanks", "ok", "vale", "bien", "chau", "adios", "bye"}
+
+# System prompt for LLM-based intent classification
+_CLASSIFY_SYSTEM_PROMPT = (
+    "Sos un clasificador de intenciones. El usuario escribio un mensaje. "
+    "Clasifica en una de 3 categorias:\n"
+    "- CODE: el usuario quiere generar, crear, modificar o corregir codigo\n"
+    "- QUESTION: el usuario hace una pregunta sobre el proyecto, tecnologia, "
+    "concepto, o quiere una explicacion\n"
+    "- CHAT: saludo casual, agradecimiento, o mensaje corto sin intencion clara\n"
+    "Respondi con UNA sola palabra: CODE, QUESTION o CHAT"
+)
 
 
 class Orchestrator:
     """Decides which team(s) to run based on user input.
 
     FEATURE 2: Classifies intent first, then selects team and complexity.
+    REFACTOR: Intent classification now uses LLM instead of keyword matching.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, llm_client: LLMClient | None = None) -> None:
         self.teams: list[str] = []
         self.complexity: Complexity = Complexity.MEDIUM
         self.intent: IntentType = IntentType.CODE
         self._roles: list[str] = []
+        self._llm_client: LLMClient | None = llm_client
 
     def classify_intent(self, user_input: str) -> IntentType:
-        """Classify the high-level intent of the user input.
+        """Classify the high-level intent of the user input using LLM.
 
         Returns IntentType.CODE if the user wants code generated,
         IntentType.QUESTION if asking a general question,
         IntentType.CHAT for casual conversation.
+
+        Falls back to IntentType.CODE on any error (better to run pipeline than do nothing).
         """
-        text = user_input.lower().strip()
+        if self._llm_client is None:
+            # No LLM client available — default to CODE
+            return IntentType.CODE
 
-        # Check for question patterns FIRST (before chat)
-        # "que archivos generaste?" should be QUESTION, not CHAT
-        # If the input ends with ?, it's likely a question
-        if text.endswith("?"):
-            if not any(kw in text for kw in CREATE_KEYWORDS | BUG_KEYWORDS):
-                return IntentType.QUESTION
+        messages = [
+            {"role": "system", "content": _CLASSIFY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ]
 
-        # Check for question keywords ANYWHERE in the text (not just first 4 words)
-        has_question_kw = any(kw in text for kw in QUESTION_KEYWORDS)
-        has_code = any(kw in text for kw in CREATE_KEYWORDS)
-        has_bug = any(kw in text for kw in BUG_KEYWORDS)
+        try:
+            response = self._llm_client.chat(
+                messages,
+                temperature=0,
+                max_tokens=10,
+            )
+        except Exception:
+            # On any error, default to CODE (better to run pipeline than do nothing)
+            return IntentType.CODE
 
-        # If it has question keywords and NO code/bug keywords, it's a question
-        if has_question_kw and not has_code and not has_bug:
+        # Parse the response — should be a single word
+        raw = response.content.strip().upper() if response.content else ""
+
+        # Accept the word anywhere in the response (in case LLM adds punctuation)
+        if "CODE" in raw:
+            return IntentType.CODE
+        elif "QUESTION" in raw:
             return IntentType.QUESTION
-
-        # Default: it's a code request
-        return IntentType.CODE
+        elif "CHAT" in raw:
+            return IntentType.CHAT
+        else:
+            # Unrecognized response — default to CODE
+            return IntentType.CODE
 
     def classify(self, user_input: str) -> tuple[list[str], Complexity]:
         """Classify user intent. Returns (teams, complexity).

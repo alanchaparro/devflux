@@ -320,6 +320,8 @@ class DevFluxApp(App):
         """Called when app is mounted."""
         if self._config is not None:
             self._client = LLMClient(self._config, self._creds)
+            # REFACTOR: Pass LLM client to orchestrator for intent classification
+            self._orchestrator = Orchestrator(self._client)
             # Welcome message
             log = self.query_one("#chat-log", RichLog)
             log.write(f"[green]DevFlux v1.0 listo![/green]")
