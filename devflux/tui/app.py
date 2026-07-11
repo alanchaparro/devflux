@@ -76,13 +76,7 @@ from ..core.sessions import SessionRecord
 # Lesson 9: CSS_PATH absolute
 CSS_PATH = str(Path(__file__).parent / "styles.tcss")
 
-BANNER = r"""
- ____                   _____   _                
-|  _ \    ___  __   __ |  ___| | |  _   _  __  __
-| | | |  / _ \ \ \ / / | |_    | | | | | | \ \/ /
-| |_| | |  __/  \ V /  |  _|   | | | |_| |  >  < 
-|____/   \___|   \_/   |_|     |_|  \__,_| /_/\_\  v1.0
-"""
+BANNER = "[bold cyan]DevFlux[/bold cyan] [dim]v1.0[/dim]"
 
 # FEATURE 1: Simplified menu — only 3 options
 MENU_ITEMS = [
