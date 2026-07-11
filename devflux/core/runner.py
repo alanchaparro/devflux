@@ -347,63 +347,6 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
             files[fname] = content
 
     return files
-    # the content type from the raw response and save it as a file.
-    # This handles cases where the LLM returns raw HTML/CSS/JS without fences.
-    if not files and content.strip():
-        fname, fcontent = _fallback_extract(content)
-        if fname and fcontent:
-            files[fname] = fcontent
-
-    return files
-
-
-def _fallback_extract(content: str) -> tuple[str | None, str | None]:
-    """Try to extract a file from raw content without code fences.
-    
-    Detects HTML, CSS, JavaScript, Python, and other common formats.
-    Returns (filename, content) or (None, None).
-    """
-    text = content.strip()
-    if not text:
-        return None, None
-    
-    # HTML detection: starts with <!DOCTYPE, <html, or contains <body, <div, etc.
-    if text.startswith('<!DOCTYPE') or text.startswith('<html') or text.startswith('<body'):
-        return 'index.html', text
-    if '<html' in text[:200] or '<body' in text[:200] or '<div' in text[:200]:
-        return 'index.html', text
-    
-    # CSS detection
-    if '{' in text and '}' in text and ':' in text:
-        # Check if it looks like CSS (selectors with {})
-        lines = text.split('\n')
-        css_score = 0
-        for line in lines[:20]:
-            stripped = line.strip()
-            if '{' in stripped and not stripped.startswith('//') and not stripped.startswith('#'):
-                css_score += 1
-            if ':' in stripped and ';' in stripped:
-                css_score += 1
-        if css_score >= 2:
-            return 'style.css', text
-    
-    # JavaScript detection
-    js_indicators = ['function ', 'const ', 'let ', 'var ', '=>', 'document.', 'window.', 'console.']
-    js_score = sum(1 for kw in js_indicators if kw in text[:500])
-    if js_score >= 2:
-        return 'script.js', text
-    
-    # Python detection
-    py_indicators = ['def ', 'import ', 'class ', 'print(', 'if __name__']
-    py_score = sum(1 for kw in py_indicators if kw in text[:500])
-    if py_score >= 2:
-        return 'main.py', text
-    
-    # Generic: if it has substantial content (>200 chars), save as output
-    if len(text) > 200:
-        return 'output.txt', text
-    
-    return None, None
 
 
 # --- Pipeline Runner ---
@@ -531,7 +474,7 @@ class PipelineRunner:
                 pass
 
             # Extract files from response
-            new_files = extract_files(response.content)
+            new_files = extract_files(response.content, role=role)
 
             # Apply garbage filter
             filtered: dict[str, str] = {}

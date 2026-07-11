@@ -50,8 +50,12 @@ class LLMClient:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> LLMResponse:
-        """Call /chat/completions endpoint. Returns LLMResponse."""
+        """Call /chat/completions endpoint. Returns LLMResponse.
+
+        timeout: per-call timeout in seconds. Overrides the client default (30s).
+        """
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         payload: dict[str, Any] = {
             "model": self.model,
@@ -62,7 +66,10 @@ class LLMClient:
         }
         start = time.time()
         try:
-            resp = self._client.post(url, json=payload, headers=self._headers())
+            resp = self._client.post(
+                url, json=payload, headers=self._headers(),
+                timeout=timeout if timeout is not None else 30.0,
+            )
         except httpx.ConnectError as exc:
             raise RuntimeError(f"No se pudo conectar a {url}. Verifica que el servidor este activo. Error: {exc}") from exc
         except httpx.TimeoutException as exc:
