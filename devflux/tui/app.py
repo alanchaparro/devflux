@@ -76,13 +76,12 @@ from ..core.sessions import SessionRecord
 # Lesson 9: CSS_PATH absolute
 CSS_PATH = str(Path(__file__).parent / "styles.tcss")
 
-BANNER = r"""
- ____             _____
-|  _ \  ___  ___ |  ___|__  _ __ __ _  ___
-| | | |/ _ \/ __|| |_ / _ \| '__/ _` |/ _ \
-| |_| |  __/ (__ |  _| (_) | | | (_| |  __/
-|____/ \___|\___||_|  \___/|_|  \__, |\___|
-                                 |___/    v1.0
+BANNER = """
+ ____  _____ _____ _   _ ____
+|  _ \\| ____|_   _| | | / ___|
+| |_) |  _|   | | | |_| \\___ \\
+|  __/| |___  | | |  _|  ___) |
+|_|   |_____| |_| |_| |_| |____/  v1.0
 """
 
 # FEATURE 1: Simplified menu — only 3 options
