@@ -640,6 +640,7 @@ class DevFluxApp(App):
         teams: list[str],
         complexity: Complexity,
         roles: list[str],
+        _is_retry: bool = False,
     ) -> None:
         """Run the pipeline in a background thread.
 
@@ -647,6 +648,10 @@ class DevFluxApp(App):
         Lesson 16: don't run in devflux's own source dir.
         BUG 1 FIX: Create fresh LLMClient per run (avoid httpx connection reuse issues).
         BUG 1 FIX: Ensure is_running resets in ALL error paths.
+
+        FEATURE: Auto-retry if 0 files generated (max 1 retry).
+        If pipeline finishes without errors but generates 0 files, re-run once.
+        If still 0 files after retry, show user-facing message.
         """
         start_time = time.time()
 
@@ -775,7 +780,46 @@ class DevFluxApp(App):
         except Exception:
             pass
 
-        # Save session
+        # FEATURE: Auto-retry if 0 files generated (max 1 retry)
+        if not files and not _is_retry:
+            self.call_from_thread(
+                self._log_chat,
+                "[yellow]Pipeline completo pero 0 archivos generados. "
+                "Reintentando (1/1)...[/yellow]"
+            )
+            self.call_from_thread(
+                self._log_pipeline,
+                "[yellow]Reintentando pipeline (no se generaron archivos)...[/yellow]"
+            )
+            # Re-run with _is_retry=True to prevent infinite loop
+            self._run_pipeline(user_input, teams, complexity, roles, _is_retry=True)
+            return
+
+        if not files and _is_retry:
+            # Already retried, still 0 files — save session and inform user
+            session = SessionRecord(
+                user_input=user_input,
+                teams=teams,
+                complexity=complexity.value,
+                roles=roles,
+                files=list(files.keys()),
+                tokens=runner.total_tokens,
+                elapsed=elapsed,
+                model=self._config.model if self._config else "unknown",
+            )
+            session.save()
+
+            self.call_from_thread(
+                self._log_chat,
+                f"[bold yellow]Pipeline completo (0 archivos despues de 2 intentos).[/bold yellow]\n"
+                f"Tokens: {runner.total_tokens}\n"
+                f"Tiempo: {elapsed:.1f}s\n"
+                f"Proba con una descripcion mas detallada."
+            )
+            self.call_from_thread(self._pipeline_done, runner.total_tokens, elapsed, [])
+            return
+
+        # Files generated — save session and show normal summary
         session = SessionRecord(
             user_input=user_input,
             teams=teams,
@@ -789,14 +833,24 @@ class DevFluxApp(App):
         session.save()
 
         # Final message
-        self.call_from_thread(
-            self._log_chat,
-            f"[bold green]Pipeline completo![/bold green]\n"
-            f"Archivos: {len(files)}\n"
-            f"Tokens: {runner.total_tokens}\n"
-            f"Tiempo: {elapsed:.1f}s\n"
-            f"Directorio: {cwd}"
-        )
+        if _is_retry:
+            self.call_from_thread(
+                self._log_chat,
+                f"[bold green]Pipeline completo (reintento exitoso)![/bold green]\n"
+                f"Archivos: {len(files)}\n"
+                f"Tokens: {runner.total_tokens}\n"
+                f"Tiempo: {elapsed:.1f}s\n"
+                f"Directorio: {cwd}"
+            )
+        else:
+            self.call_from_thread(
+                self._log_chat,
+                f"[bold green]Pipeline completo![/bold green]\n"
+                f"Archivos: {len(files)}\n"
+                f"Tokens: {runner.total_tokens}\n"
+                f"Tiempo: {elapsed:.1f}s\n"
+                f"Directorio: {cwd}"
+            )
 
         if files:
             files_list = ", ".join(files.keys())
