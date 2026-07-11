@@ -6,15 +6,31 @@ Pedido del usuario:
 Contexto de roles previos:
 {{ previous_summary }}
 
+{% if session_history %}
+Historial de sesion del proyecto (pedidos anteriores):
+{{ session_history }}
+
+{% endif %}
+{% if existing_files %}
+Archivos existentes en el proyecto (modificar o ampliar, NO recrear desde cero):
+{% for fname, content in existing_files.items() %}
+- {{ fname }} ({{ content|length }} caracteres)
+{% endfor %}
+{% else %}
+No hay archivos previos — proyecto nuevo.
+{% endif %}
+
 Instrucciones:
 1. Analiza el pedido del usuario
-2. Define los requisitos funcionales
-3. Identifica casos de uso principales
-4. Identifica casos borde importantes
-5. Define el alcance (qué SI y qué NO)
+{% if existing_files %}2. Revisa los archivos existentes y determina qué modificar/agregar{% endif %}
+3. Define los requisitos funcionales
+4. Identifica casos de uso principales
+5. Identifica casos borde importantes
+6. Define el alcance (qué SI y qué NO)
 
 Devuelve un documento PRD en markdown con:
 - Resumen del proyecto
+{% if existing_files %}- Archivos existentes a modificar{% endif %}
 - Requisitos funcionales (lista numerada)
 - Casos de uso
 - Casos borde

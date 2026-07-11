@@ -72,6 +72,7 @@ from ..core.orchestrator import (
 )
 from ..core.runner import PipelineRunner
 from ..core.sessions import SessionRecord
+from ..core.context import save_context, load_context_for_prompt, load_context_files
 
 # Lesson 9: CSS_PATH absolute
 CSS_PATH = str(Path(__file__).parent / "styles.tcss")
@@ -261,6 +262,8 @@ class DevFluxApp(App):
         # Store file contents keyed by filename for display
         self._code_files: dict[str, Any] = {}  # fname -> (display_content, is_diff)
         self._code_file_order: list[str] = []  # ordered list of filenames
+        # FEATURE: Memoria de sesion — track last user input for context saving
+        self._last_user_input: str = ""
 
     def compose(self) -> ComposeResult:
         """Compose the main layout."""
@@ -506,6 +509,9 @@ class DevFluxApp(App):
         # Log user message
         self._log_chat(f"[bold blue]> {text}[/bold blue]")
 
+        # FEATURE: Memoria de sesion — track user input for context saving
+        self._last_user_input = text
+
         # FEATURE 2: Classify intent BEFORE anything else
         intent = self._orchestrator.classify_intent(text)
 
@@ -567,16 +573,22 @@ class DevFluxApp(App):
             self.call_from_thread(self._question_done)
             return
 
-        # Simple system prompt — DevFlux context but no pipeline roles
+        # FEATURE: Memoria de sesion — load context before answering
+        context_snippet = load_context_for_prompt()
+
+        # System prompt WITH project context so the LLM knows what was generated
+        system_content = (
+            "Sos DevFlux, un asistente de desarrollo de software. "
+            "Respondes preguntas de forma clara y concisa. "
+            "Si el usuario pide codigo o un proyecto, decile que "
+            "reformule como peticion de codigo para ejecutar el pipeline.\n\n"
+            f"{context_snippet}"
+        )
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Sos DevFlux, un asistente de desarrollo de software. "
-                    "Respondes preguntas de forma clara y concisa. "
-                    "Si el usuario pide codigo o un proyecto, decile que "
-                    "reformule como peticion de codigo para ejecutar el pipeline."
-                ),
+                "content": system_content,
             },
             {"role": "user", "content": user_input},
         ]
@@ -867,6 +879,7 @@ class DevFluxApp(App):
         """Called when pipeline finishes (on UI thread).
 
         BUG 1 FIX: Always reset is_running, regardless of success/failure.
+        FEATURE: Memoria de sesion — save context after pipeline run.
         """
         self.is_running = False
         try:
@@ -877,6 +890,16 @@ class DevFluxApp(App):
             )
         except Exception:
             pass
+
+        # FEATURE: Memoria de sesion — save .devflux/context.md
+        try:
+            ctx_path = save_context(
+                user_input=self._last_user_input,
+                generated_files=files,
+            )
+            self._log_chat(f"[dim]Contexto guardado: {ctx_path}[/dim]")
+        except Exception as exc:
+            self._log_chat(f"[yellow]Aviso: no se pudo guardar contexto: {exc}[/yellow]")
 
     def _update_code_panel(
         self,

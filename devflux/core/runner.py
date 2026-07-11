@@ -249,12 +249,22 @@ class PipelineRunner:
         # Track which files existed before the run (for diff display)
         files_before_run: set[str] = set(existing_on_disk.keys())
 
+        # FEATURE: Memoria de sesion — load .devflux/context.md for history
+        session_history: str = ""
+        context_md_path = cwd_resolved / ".devflux" / "context.md"
+        if context_md_path.exists():
+            try:
+                session_history = context_md_path.read_text(encoding="utf-8")
+            except Exception:
+                session_history = ""
+
         # Build context for each role, starting with files already on disk
         context: dict[str, Any] = {
             "user_input": user_input,
             "previous_roles": [],
             "accumulated_files": dict(existing_on_disk),
             "files_before_run": files_before_run,
+            "session_history": session_history,
         }
 
         for role in roles:
@@ -266,6 +276,7 @@ class PipelineRunner:
                 user_input=user_input,
                 previous_summary=self._summarize_context(context),
                 existing_files=dict(context["accumulated_files"]),
+                session_history=context.get("session_history", ""),
             )
 
             # Build messages
