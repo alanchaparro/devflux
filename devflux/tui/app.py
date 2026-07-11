@@ -601,7 +601,7 @@ class DevFluxApp(App):
         except Exception:
             pass
 
-        # Display the answer in the chat log
+        # Display the answer in BOTH chat log and pipeline log
         answer = response.content if response.content else "(sin respuesta)"
         self.call_from_thread(
             self._log_chat,
@@ -609,6 +609,15 @@ class DevFluxApp(App):
         )
         self.call_from_thread(
             self._log_chat,
+            f"[dim]({response.tokens} tokens, {response.elapsed:.1f}s)[/dim]"
+        )
+        # Also show the answer in the pipeline log for chat-like familiarity
+        self.call_from_thread(
+            self._log_pipeline,
+            f"[bold green]Respuesta:[/bold green] {answer}"
+        )
+        self.call_from_thread(
+            self._log_pipeline,
             f"[dim]({response.tokens} tokens, {response.elapsed:.1f}s)[/dim]"
         )
 
