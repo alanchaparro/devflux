@@ -362,8 +362,9 @@ class DevFluxApp(App):
 
         FEATURE 3: If in confirm mode, Enter is handled by on_key instead.
         """
-        # FEATURE 3: Don't process Enter if in confirm mode
+        # FEATURE 3: In confirm mode, Enter selects the highlighted option
         if self._confirm_mode:
+            self._handle_confirm_select()
             return
 
         # Determine which input widget is active
