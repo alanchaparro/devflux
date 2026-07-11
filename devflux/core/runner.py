@@ -41,7 +41,7 @@ def render_prompt(template_name: str, **kwargs: Any) -> str:
 
 # --- Garbage filter (Lesson 13) ---
 
-GARBAGE_FILES = {"output", "output.text", "output.txt", "output.md", "readme.md", "result", "result.txt", "main.txt"}
+GARBAGE_FILES = {"output", "output.text", "output.txt", "output.md", "readme.md", "result", "result.txt", "main.txt", "run.sh", "start.sh", "main.sh", "setup.sh", "install.sh", "run.bat", "start.bat"}
 GARBAGE_PATTERNS = [
     # Only markdown without code blocks
     re.compile(r"^[^`]*$", re.MULTILINE),  # no backticks at all
@@ -59,6 +59,10 @@ def is_garbage(filename: str, content: str) -> bool:
     # Reject .txt files that are likely LLM output (not real documentation)
     # Allow .txt only if it has meaningful content (not just LLM chatter)
     if fname_lower.endswith(".txt") and fname_lower not in ("requirements.txt", "changelog.txt", "license.txt"):
+        # .txt files are usually LLM-generated artifacts, not real code
+        return True
+    # Reject .sh files — LLM generates run.sh/start.sh that the user didn't ask for
+    if fname_lower.endswith(".sh"):
         # .txt files are usually LLM-generated artifacts, not real code
         return True
 
