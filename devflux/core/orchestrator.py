@@ -159,6 +159,29 @@ class Orchestrator:
         text = user_input.lower()
         return any(keyword in text for keyword in BUG_KEYWORDS)
 
+    def select_user_action(self, user_input: str, action: str) -> tuple[list[str], Complexity, list[str]]:
+        """Choose an invisible, proportional implementation path.
+
+        Everyday visual edits get one implementer and the normal integrity
+        check.  The expanded workflow remains available for genuinely broad or
+        explicitly complex work, but is never exposed as a UI choice.
+        """
+        text = user_input.casefold()
+        complex_signals = (
+            "arquitectura", "base de datos", "database", "autentic", "login",
+            "api ", "microserv", "migr", "varias pantallas", "sistema completo",
+        )
+        is_fast = action == "modify" and not any(signal in text for signal in complex_signals)
+        if is_fast:
+            self.teams = ["dev"]
+            self.complexity = Complexity.SIMPLE
+            self._roles = ["implementer"]
+            return self.teams, self.complexity, list(self._roles)
+
+        team = "bugs" if action == "bugs" else "dev"
+        teams, complexity = self.select_team(user_input, team)
+        return teams, complexity, self.get_roles()
+
     def select_team(self, user_input: str, team: str) -> tuple[list[str], Complexity]:
         """Classify complexity, then force the confirmation-selected team."""
         _teams, complexity = self.classify(user_input)

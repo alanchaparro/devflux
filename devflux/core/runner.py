@@ -34,6 +34,9 @@ _jinja_env = jinja2.Environment(
 )
 
 ROLE_TEMPLATES = {
+    # The fast path intentionally has one implementation turn and only returns
+    # the functional files required for the user's request.
+    "implementer": "dev/implementer.j2",
     "analista": "dev/analista.j2", "arquitecto": "dev/arquitecto.j2",
     "planificador": "dev/planificador.j2", "backend": "dev/backend.j2",
     "frontend": "dev/frontend.j2", "qa": "dev/qa.j2",
@@ -84,6 +87,28 @@ GARBAGE_FILES = {
     "main.txt",
     "run.bat", "start.bat",
 }
+
+# Internal planning artifacts belong in diagnostics, never in a user's project.
+INTERNAL_ARTIFACT_NAMES = {
+    "prd.md", "architecture.md", "plan.md", "main.md", "qa_report.md",
+    "review.md", "integration.md",
+}
+INTERNAL_ARTIFACT_SUFFIXES = {".mermaid", ".mmd"}
+
+
+def is_functional_project_file(filename: str) -> bool:
+    """Return whether a generated path is safe to write and show to a user."""
+    safe = _safe_relative_path(filename)
+    if safe is None:
+        return False
+    path = Path(safe)
+    if path.name.casefold() in INTERNAL_ARTIFACT_NAMES:
+        return False
+    if path.suffix.casefold() in INTERNAL_ARTIFACT_SUFFIXES | {".md"}:
+        return False
+    return not any(part.casefold() in {"docs", "documentation"} for part in path.parts)
+
+
 GARBAGE_PATTERNS = [
     # Only markdown without code blocks
     re.compile(r"^[^`]*$", re.MULTILINE),  # no backticks at all
@@ -542,7 +567,7 @@ class PipelineRunner:
             # Apply garbage filter
             filtered: dict[str, str] = {}
             for fname, fcontent in new_files.items():
-                if not is_garbage(fname, fcontent):
+                if is_functional_project_file(fname) and not is_garbage(fname, fcontent):
                     filtered[fname] = fcontent
                 else:
                     self._callback(role, "garbage", {"file": fname})

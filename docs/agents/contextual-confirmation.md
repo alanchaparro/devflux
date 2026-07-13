@@ -1,68 +1,80 @@
-# Guía para agentes: router conversacional y confirmación
+# Guía para agentes: UX KISS, rutas y límites de exposición
 
-**Estado:** verificado contra `devflux/tui/app.py`, `devflux/core/orchestrator.py` y `tests/test_tui_logic.py` el 2026-07-13.
+**Estado:** verificado contra `devflux/tui/app.py`, `devflux/core/orchestrator.py`, `devflux/core/runner.py` y `tests/test_user_experience.py` el 2026-07-13.
 
-## Contrato del router
+## Contrato visible para la persona usuaria
 
-`Orchestrator.route_conversation()` es la fuente de verdad para enrutar cada envío de chat en un proyecto existente. Recibe:
+DevFlux es una conversación, no un selector de equipos. El menú solo ofrece **Nuevo proyecto**, **Continuar proyecto**, **Ajustes** y **Diagnóstico**. Cada pedido de cambio llega a una sola confirmación humana:
 
-1. `conversation`: todos los `conversation_turns` acumulados, en orden cronológico.
+```text
+[Enter] Aplicar · [Esc] Cambiar pedido
+```
+
+- El primer Enter envía el mensaje y puede consultar el router; nunca inicia un pipeline por sí solo.
+- El segundo Enter aplica el único cambio propuesto.
+- Esc cancela la confirmación y conserva el chat para reformular el pedido.
+- Una pregunta se responde en el chat sin crear `PipelineRunner`.
+- Ctrl+D es el único acceso normal al panel de diagnóstico.
+
+No introducir en el chat ni en el menú términos internos: nombres de equipos/roles, complejidad, tokens, proveedor, modelo, URL, reintentos automáticos, stack traces, PRD, arquitectura o planes. Los detalles de soporte se registran en diagnóstico; el mensaje de error visible debe seguir `DevFluxApp.human_model_error()` y ofrecer un reintento humano.
+
+## Enrutamiento conversacional
+
+`Orchestrator.route_conversation()` recibe:
+
+1. `conversation`: `conversation_turns` completos y cronológicos.
 2. `active_thread`: `none`, `modify`, `bugs` o `question`.
-3. `project_context`: resumen seguro de `.devflux/context.md` e inventario preparado por `load_context_for_prompt(Path.cwd())`.
-4. `latest_user_message`: el último texto enviado.
+3. `project_context`: contexto seguro preparado por `load_context_for_prompt(Path.cwd())`.
+4. `latest_user_message`: el texto recién enviado.
 
-Usa una única llamada LLM con `temperature=0`, `max_tokens=32` y `timeout=10`. La instrucción exige JSON `{"route":"MODIFY|BUG|QUESTION|CLARIFY"}`. Para proveedores compatibles con DeepSeek/OpenAI, el parser reúne `content`, `reasoning` y campos de `raw` como `choices[0].message.reasoning_content`; acepta JSON directo, JSON dentro de bloques Markdown y etiquetas explícitas (por ejemplo, `Final: MODIFY`). No agregar heurísticas de palabras clave como fallback: una palabra de ruta mencionada incidentalmente en prosa no decide la conversación.
+Hace una llamada con `temperature=0`, `max_tokens=32` y `timeout=10`. Acepta `MODIFY`, `BUG`, `QUESTION` o `CLARIFY`, incluido JSON directo/fenced o etiqueta explícita y contenido de campos OpenAI/DeepSeek como `reasoning_content`. No añadir fallbacks por palabras aisladas: una ruta mencionada dentro de prosa no es una decisión.
 
-`RouterResult` contiene una ruta válida (`ConversationRoute`) o un `error` recuperable. Las rutas son:
-
-| Ruta | Efecto en `DevFluxApp` |
+| Ruta | Resultado |
 | --- | --- |
-| `MODIFY` | Con archivos existentes, abre confirmación con `modify` seleccionado; en directorio vacío, selecciona `create`. Marca el hilo `modify`. |
-| `BUG` | Abre confirmación con `bugs` seleccionado y marca el hilo `bugs`. |
-| `QUESTION` | Marca el hilo `question` y llama `_answer_question()`; no crea `PipelineRunner`. |
-| `CLARIFY` | Mantiene/abre el hilo `modify` (o `bugs` si era el activo), muestra `_show_clarification()` y no inicia trabajo. |
+| `MODIFY` | Prepara una confirmación única; usa `modify` si existen archivos de proyecto y `create` si no. |
+| `BUG` | Prepara una confirmación única para corregir el problema. |
+| `QUESTION` | Responde por `_answer_question()`; no ejecuta pipeline. |
+| `CLARIFY` | Pide un detalle concreto sin iniciar trabajo. |
 
-## Invariantes conversacionales
+Antes de llamar al router se actualiza `conversation_turns`. El hilo activo persiste: una aclaración concreta en un hilo de modificación debe volver a preparar la confirmación y no abrir otro ciclo de preguntas.
 
-- `conversation_turns` se actualiza **antes** de llamar al router. Una aclaración concreta conserva el pedido anterior en el transcript.
-- `active_thread` persiste entre turnos. Por ello, tras «quiero hacer modificaciones en mi proyecto», una respuesta como «que el fondo tenga burbujas animadas que al clicar cambien de color» debe resolver `MODIFY`, abrir el selector **Modificar proyecto actual** y no volver a pedir aclaración.
-- `CLARIFY` solo corresponde si no hay un objetivo implementable ni una pregunta contestable. No usarlo solo porque falte un verbo técnico.
-- El primer **Enter** puede consultar el router, pero no inicia un pipeline. Para `MODIFY` y `BUG`, un segundo Enter sobre la confirmación sigue siendo obligatorio.
-- `QUESTION` es la única ruta que responde directamente; no debe iniciar equipos ni `PipelineRunner`.
+Si el router falla, vence el timeout o devuelve una salida inválida, no se muestra el error técnico ni se vuelve a llamar al router. Con un hilo activo se aplica el fallback semántico; sin hilo activo se prepara la confirmación normal. En todos los casos el efecto de escritura sigue requiriendo Enter explícito.
 
-## Garantías de fallo y anti-loop
+## Ruta de implementación proporcional
 
-Si no existe cliente LLM, vence el timeout, ocurre una excepción o la salida no es una ruta válida, `route_conversation()` devuelve `RouterResult(error=...)`; el detalle técnico solo se registra para diagnóstico. `_apply_conversation_route()` debe entonces:
+`Orchestrator.select_user_action(user_input, action)` decide el trabajo interno después de la confirmación:
 
-1. Si hay `active_thread`, aplicar el fallback semántico sin volver a clasificar: `modify` → `MODIFY`, `bugs` → `BUG`, `question` → `QUESTION`.
-2. Para `modify` o `bugs`, abrir **una** confirmación con la acción del hilo resaltada; para `question`, responder directamente sin `PipelineRunner`.
-3. Si el hilo es `none`, abrir el selector contextual normal. No mostrar el error técnico, habilitar `_router_error_mode` ni forzar al usuario a repetir la selección.
+- Un `modify` sin señales de alcance amplio usa `teams=["dev"]`, `Complexity.SIMPLE` y el único rol `implementer`.
+- Pedidos amplios o explícitamente complejos conservan el flujo de desarrollo normal.
+- Los bugs usan el flujo de bugs.
 
-La confirmación sigue siendo obligatoria para los efectos de `modify` y `bugs`: el primer Enter que envía el mensaje solo abre el menú, y el Enter posterior ejecuta la opción resaltada. Esta recuperación no reintenta el router, no entra en un loop de aclaración/selector y no lanza equipos automáticamente. `_debug_log_router()` guarda por turno la respuesta cruda y las partes analizadas en `.devflux/debug_classify.txt`; un fallo de ese log nunca afecta la interacción.
+No convertir esta decisión en una opción de UI ni mostrar roles o etapas al usuario. El prompt `dev/implementer.j2` debe pedir solo el mínimo de archivos funcionales necesario y no planes, documentación o diagnósticos.
 
-## Acciones de confirmación
+`_last_retry` se arma antes de ejecutar un cambio y permite Enter vacío solo tras un fallo recuperable. Toda ejecución que escribe archivos debe limpiarlo antes de completar, para que un Enter vacío posterior nunca repita un cambio exitoso.
 
-`confirmation_for_intent()` conserva cinco acciones y sus etiquetas visibles: `create`, `modify`, `bugs`, `question` y `rewrite`. La acción confirmada, no una clasificación secundaria, determina el equipo:
+## Archivos funcionales y panel derecho
 
-- `create` y `modify` fuerzan `equipo-dev`.
-- `bugs` fuerza `equipo-bugs`.
-- `question` usa `_answer_question()` sin pipeline.
-- `rewrite` restaura el texto sin llamar LLM ni pipeline.
+`is_functional_project_file()` es la política única para resultados generados y UI. Un archivo debe ser una ruta relativa segura, no estar dentro de `docs`/`documentation`, no tener extensión `.md`, `.mermaid` o `.mmd`, y no llamarse `prd.md`, `architecture.md`, `plan.md`, `main.md`, `qa_report.md`, `review.md` o `integration.md`.
 
-El inventario de proyecto debe excluir `.git`, `.devflux`, cachés y secretos; esos directorios por sí solos no habilitan `modify`.
+`PipelineRunner.run()` aplica esta política antes de escribir. `DevFluxApp._update_code_panel()` la aplica otra vez antes de mostrar archivos o diffs. Mantener ambas barreras: una salida de modelo no puede escribir ni enseñar documentación o artefactos internos.
 
-## Archivos y validación obligatoria
+## Zonas de cambio y validación
 
-- Router, `ConversationRoute` y `RouterResult`: `devflux/core/orchestrator.py`.
-- Estado de sesión, aplicación de rutas y confirmación: `devflux/tui/app.py`.
-- Cobertura de comportamiento: `tests/test_tui_logic.py`.
+| Responsabilidad | Archivo | Evidencia |
+| --- | --- | --- |
+| Chat, confirmación, diagnóstico y reintento | `devflux/tui/app.py` | `tests/test_user_experience.py`, `tests/test_tui_logic.py` |
+| Rutas y fast path | `devflux/core/orchestrator.py` | `tests/test_user_experience.py` |
+| Filtrado y escritura | `devflux/core/runner.py` | `tests/test_user_experience.py`, pruebas de hardening |
+| Prompt de edición rápida | `devflux/prompts/dev/implementer.j2` | build de paquete |
+| Distribución de prompts | `pyproject.toml` | `python3 -m build` |
 
-Al cambiar este flujo, ejecutar:
+Antes de entregar cambios en este flujo ejecutar:
 
 ```bash
 python3 -m pytest -q
 python3 -m compileall -q devflux
 python3 -m build
+git diff --check
 ```
 
-Además de la suite, mantener casos para: envío de conversación/contexto al router; respuestas DeepSeek en `reasoning`/`reasoning_content`, JSON fenced y etiquetas explícitas sin falsos positivos por palabras aisladas; el seguimiento concreto que no repite `CLARIFY`; fallback por hilo `modify`/`bugs`/`question` sin error técnico ni pipeline; fallo sin hilo que muestra el selector normal; primer Enter sin pipeline; segundo Enter con acción explícita; y `Esc` sin trabajo.
+Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; desarme del reintento tras éxito; fast path; y filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar.

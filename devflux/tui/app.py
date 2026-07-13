@@ -72,7 +72,7 @@ from ..core.orchestrator import (
     COMPLEXITY_ROLES,
     COMPLEXITY_TOKENS,
 )
-from ..core.runner import PipelineRunner
+from ..core.runner import PipelineRunner, is_functional_project_file
 from ..core.sessions import SessionRecord
 from ..core.context import save_context, load_context_for_prompt, load_context_files
 
@@ -81,11 +81,12 @@ CSS_PATH = str(Path(__file__).parent / "styles.tcss")
 
 BANNER = "[bold cyan]DevFlux[/bold cyan] [dim]v1.0[/dim]"
 
-# FEATURE 1: Simplified menu — only 3 options
+# Product menu: implementation choices are deliberately absent.
 MENU_ITEMS = [
-    "Generar codigo",
+    "Nuevo proyecto",
+    "Continuar proyecto",
     "Ajustes",
-    "Temas",
+    "Diagnóstico",
 ]
 
 # FEATURE 1: Settings submenu
@@ -149,6 +150,17 @@ def confirmation_for_intent(
     if has_existing_project:
         return options, 1
     return options, 0
+
+
+def human_confirmation(text: str, has_existing_project: bool) -> str:
+    """Describe the proposed outcome without leaking routing implementation."""
+    normalized = text.strip().rstrip(".")
+    if "burbuja" in normalized.casefold():
+        target = "al proyecto actual" if has_existing_project else "al proyecto nuevo"
+        return f"Entendí: agregaré un fondo de burbujas animadas {target}."
+    verb = "actualizaré" if has_existing_project else "crearé"
+    target = "el proyecto actual" if has_existing_project else "un proyecto"
+    return f"Entendí: {verb} {target} según tu pedido: {normalized}."
 
 
 class MenuWidget(Static):
@@ -272,13 +284,14 @@ class DevFluxApp(App):
 
     CSS_PATH = CSS_PATH
     TITLE = "DevFlux v1.0"
-    SUB_TITLE = "TUI multi-agente"
+    SUB_TITLE = "Asistente para tu proyecto"
 
     BINDINGS = [
         # Lesson 5: priority=True to intercept Enter before widgets
         Binding("enter", "submit_input", "Enviar", priority=True),
         Binding("escape", "close_menu", "Cerrar", priority=True),
-        Binding("ctrl+s", "toggle_menu", "Menu", priority=True),
+        Binding("ctrl+s", "toggle_menu", "Menú", priority=True),
+        Binding("ctrl+d", "toggle_diagnostics", "Diagnóstico", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
         # File navigation in code panel (no priority — only when focused on file list)
         Binding("j", "next_file", "Sig. archivo"),
@@ -322,6 +335,8 @@ class DevFluxApp(App):
         self.conversation_turns: list[dict[str, str]] = []
         self.active_thread: str = "none"  # none | modify | bugs | question
         self._router_error_mode: bool = False
+        self._diagnostics_visible: bool = False
+        self._last_retry: tuple[str, list[str], Complexity, list[str]] | None = None
         # A vague modification must receive a concrete follow-up before a team runs.
         self.pending_modify_clarification: bool = False
         self._pending_clarification_action: str | None = None
@@ -383,19 +398,19 @@ class DevFluxApp(App):
             self._client = LLMClient(self._config, self._creds)
             # REFACTOR: Pass LLM client to orchestrator for intent classification
             self._orchestrator = Orchestrator(self._client)
-            # Welcome message
+            # Keep the first impression conversational. Provider, model and cwd
+            # remain available only in Ctrl+D diagnostics.
             log = self.query_one("#chat-log", RichLog)
-            log.write(f"[green]DevFlux v1.0 listo![/green]")
-            log.write(f"Modelo: [bold]{self._config.model}[/bold]")
-            log.write(f"Provider: [bold]{self._config.provider}[/bold]")
-            log.write(f"CWD: {Path.cwd()}")
-            log.write(f"Tema: [bold]{self._current_theme}[/bold]")
-            log.write("")
-            log.write("[dim]Escribi tu idea o presiona Ctrl+S para el menu[/dim]")
+            log.write("[bold green]Hola, soy DevFlux.[/bold green]")
+            log.write("Contame qué querés crear, cambiar, revisar o entender de tu proyecto.")
 
-            # Pipeline log placeholder
-            plog = self.query_one("#pipeline-log", RichLog)
-            plog.write("[dim]Pipeline: esperando...[/dim]")
+            diagnostics = self.query_one("#pipeline-log", RichLog)
+            diagnostics.write("[bold]Diagnóstico[/bold]")
+            diagnostics.write(f"Modelo: {self._config.model} | Provider: {self._config.provider}")
+            diagnostics.write(f"Directorio: {Path.cwd()}")
+            diagnostics.visible = False
+            viewer = self.query_one("#code-viewer", RichLog)
+            viewer.write("[dim]Todavía no hay cambios para mostrar.[/dim]")
 
             # Hide menu widget initially (Lesson 10: visible, not display)
             menu = self.query_one("#menu-widget", Static)
@@ -454,6 +469,11 @@ class DevFluxApp(App):
             return
         value = chat_input.value
         if not value.strip():
+            if self._last_retry and not self.is_running:
+                prompt, teams, complexity, roles = self._last_retry
+                self.is_running = True
+                self._log_chat("[yellow]Reintentando...[/yellow]")
+                self._run_pipeline(prompt, teams, complexity, roles)
             return
         # _handle_chat_submit clears input and logs the message itself
         self._handle_chat_submit(value)
@@ -618,27 +638,14 @@ class DevFluxApp(App):
             else:
                 # With no established thread, retain the ordinary selector but do
                 # not expose router internals or leave the UI in an error mode.
-                self._confirm_mode = True
-                self._confirm_text = text
-                self._confirm_intent = IntentType.CODE
-                self._confirm_options, self._confirm_selected = confirmation_for_intent(
-                    IntentType.CODE,
-                    has_existing_project=bool(load_context_files(Path.cwd())),
-                )
-                self._show_confirmation()
+                self._prepare_confirmation(text, "modify" if load_context_files(Path.cwd()) else "create")
                 return
 
         route = result.route
         if route is None:
             # RouterResult is intentionally recoverable. This guard keeps a bad
             # custom client from producing a technical error in the TUI.
-            self._confirm_mode = True
-            self._confirm_text = text
-            self._confirm_intent = IntentType.CODE
-            self._confirm_options, self._confirm_selected = confirmation_for_intent(
-                IntentType.CODE, has_existing_project=bool(load_context_files(Path.cwd()))
-            )
-            self._show_confirmation()
+            self._prepare_confirmation(text, "modify" if load_context_files(Path.cwd()) else "create")
             return
         if route is ConversationRoute.CLARIFY:
             action = "bugs" if self.active_thread == "bugs" else "modify"
@@ -668,17 +675,7 @@ class DevFluxApp(App):
         else:
             action = "modify" if has_existing_project else "create"
         self.active_thread = "bugs" if action == "bugs" else "modify"
-        self._confirm_mode = True
-        self._confirm_text = text
-        self._confirm_intent = IntentType.CODE
-        self._confirm_options, _unused_selected = confirmation_for_intent(
-            IntentType.CODE, has_existing_project=has_existing_project
-        )
-        self._confirm_selected = next(
-            i for i, (_number, _description, candidate) in enumerate(self._confirm_options)
-            if candidate == action
-        )
-        self._show_confirmation()
+        self._prepare_confirmation(text, action)
 
     @work(thread=True)
     def _answer_question(self, user_input: str) -> None:
@@ -692,10 +689,8 @@ class DevFluxApp(App):
         try:
             client = LLMClient(self._config, self._creds)  # type: ignore[arg-type]
         except Exception as exc:
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold red]ERROR creando cliente LLM: {exc}[/bold red]"
-            )
+            self.call_from_thread(self._log_pipeline, f"Cliente LLM: {exc}")
+            self.call_from_thread(self._log_chat, self.human_model_error(exc))
             self.call_from_thread(self._question_done)
             return
 
@@ -722,10 +717,8 @@ class DevFluxApp(App):
         try:
             response = client.chat(messages)
         except Exception as exc:
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold red]ERROR consultando LLM: {exc}[/bold red]"
-            )
+            self.call_from_thread(self._log_pipeline, f"Consulta LLM: {exc}")
+            self.call_from_thread(self._log_chat, self.human_model_error(exc))
             try:
                 client.close()
             except Exception:
@@ -745,18 +738,10 @@ class DevFluxApp(App):
             self._log_chat,
             f"[bold green]DevFlux:[/bold green] {answer}"
         )
-        self.call_from_thread(
-            self._log_chat,
-            f"[dim]({response.tokens} tokens, {response.elapsed:.1f}s)[/dim]"
-        )
-        # Also show the answer in the pipeline log for chat-like familiarity
+        self.call_from_thread(self._log_pipeline, f"Respuesta: {answer}")
         self.call_from_thread(
             self._log_pipeline,
-            f"[bold green]Respuesta:[/bold green] {answer}"
-        )
-        self.call_from_thread(
-            self._log_pipeline,
-            f"[dim]({response.tokens} tokens, {response.elapsed:.1f}s)[/dim]"
+            f"Uso: {response.tokens} tokens, {response.elapsed:.1f}s",
         )
 
         # Update pipeline log
@@ -811,10 +796,8 @@ class DevFluxApp(App):
         try:
             fresh_client = LLMClient(self._config, self._creds)  # type: ignore[arg-type]
         except Exception as exc:
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold red]ERROR creando cliente LLM: {exc}[/bold red]"
-            )
+            self.call_from_thread(self._log_pipeline, f"Cliente LLM: {exc}")
+            self.call_from_thread(self._log_chat, self.human_model_error(exc))
             self.call_from_thread(self._pipeline_done, 0, 0.0, [])
             return
 
@@ -827,10 +810,9 @@ class DevFluxApp(App):
             if status == "start":
                 spinner = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
                 self._spinner_idx += 1
-                self.call_from_thread(
-                    self._log_pipeline,
-                    f"[yellow]{spinner} {role}...[/yellow]"
-                )
+                self.call_from_thread(self._log_pipeline, f"{spinner} {role} inició")
+                friendly = "Verificando que siga funcionando..." if role == "equipo-bugs" else "Actualizando los archivos necesarios..."
+                self.call_from_thread(self._log_chat, f"[yellow]{friendly}[/yellow]")
             elif status == "done":
                 tokens = data.get("tokens", 0) if data else 0
                 elapsed = data.get("elapsed", 0.0) if data else 0.0
@@ -896,14 +878,8 @@ class DevFluxApp(App):
             files = runner.run(roles, user_input, teams=teams, cwd=cwd)
         except Exception as exc:
             # BUG 1 FIX: Log the actual error for debugging
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold red]ERROR en pipeline: {exc}[/bold red]"
-            )
-            self.call_from_thread(
-                self._log_pipeline,
-                f"[bold red]ERROR: {exc}[/bold red]"
-            )
+            self.call_from_thread(self._log_pipeline, f"Pipeline: {exc}")
+            self.call_from_thread(self._log_chat, self.human_model_error(exc))
             self.call_from_thread(self._pipeline_done, 0, 0.0, [])
             # BUG 1 FIX: Close the fresh client on error
             try:
@@ -1008,24 +984,15 @@ class DevFluxApp(App):
         FEATURE: Memoria de sesion — save context after pipeline run.
         """
         self.is_running = False
-        try:
-            plog = self.query_one("#pipeline-log", RichLog)
-            plog.write(
-                f"[bold green]Pipeline: completado ({tokens} tokens, {elapsed:.1f}s, "
-                f"{len(files)} archivos)[/bold green]"
-            )
-        except Exception:
-            pass
-
-        # FEATURE: Memoria de sesion — save .devflux/context.md
-        try:
-            ctx_path = save_context(
-                user_input=self._last_user_input,
-                generated_files=files,
-            )
-            self._log_chat(f"[dim]Contexto guardado: {ctx_path}[/dim]")
-        except Exception as exc:
-            self._log_chat(f"[yellow]Aviso: no se pudo guardar contexto: {exc}[/yellow]")
+        # A completed write must not leave an invisible retry armed: pressing
+        # Enter on an empty chat input is reserved for failed runs only.
+        if files:
+            self._last_retry = None
+        self._log_pipeline(f"Completado: {len(files)} archivos, {tokens} tokens, {elapsed:.1f}s")
+        if files:
+            self._log_chat("[bold green]Listo.[/bold green]")
+        elif self._last_retry is None:
+            self._log_chat("[bold green]Listo.[/bold green]")
 
     def _update_code_panel(
         self,
@@ -1044,6 +1011,9 @@ class DevFluxApp(App):
         if not self._config:
             return
 
+        filenames = [name for name in filenames if is_functional_project_file(name)]
+        if not filenames:
+            return
         file_contents = file_contents or {}
         file_diffs = file_diffs or {}
         cwd = Path.cwd()
@@ -1240,12 +1210,14 @@ class DevFluxApp(App):
             self.query_one("#chat-input", Input).focus()
             return
 
-        if item == "Generar codigo":
-            self._log_chat("[cyan]Escribe tu idea en el chat para generar codigo...[/cyan]")
+        if item == "Nuevo proyecto":
+            self._log_chat("Contame qué querés crear y preparo una propuesta.")
+        elif item == "Continuar proyecto":
+            self._log_chat("Contame qué querés cambiar o revisar del proyecto actual.")
         elif item == "Ajustes":
             self._show_settings()
-        elif item == "Temas":
-            self._cycle_theme()
+        elif item == "Diagnóstico":
+            self.action_toggle_diagnostics()
 
         self.query_one("#chat-input", Input).focus()
 
@@ -1427,53 +1399,26 @@ class DevFluxApp(App):
             return
         self._log_chat(last.summary())
 
-    # --- Confirmacion interactiva (FEATURE 3) ---
+    # --- Confirmación humana ---
+
+    def _prepare_confirmation(self, text: str, action: str) -> None:
+        self._confirm_mode = True
+        self._confirm_text = text
+        self._confirm_intent = IntentType.CODE
+        self._confirm_selected = 0
+        self._confirm_options = [
+            ("apply", human_confirmation(text, bool(load_context_files(Path.cwd()))), action)
+        ]
+        self._show_confirmation()
 
     def _show_confirmation(self) -> None:
-        """Render confirmation options in the pipeline log.
-
-        Shows the detected intent and 3 options the user can navigate with ↑/↓/Enter.
-        The selected option is highlighted with bold cyan.
-        """
+        """Present one friendly action instead of an implementation selector."""
+        self._log_chat(f"[bold green]DevFlux:[/bold green] {self._confirm_options[0][1]}")
+        self._log_chat("[bold cyan][Enter] Aplicar[/bold cyan]  ·  [dim][Esc] Cambiar pedido[/dim]")
         try:
-            plog = self.query_one("#pipeline-log", RichLog)
-            plog.clear()
-
-            intent_label = {
-                IntentType.CODE: "CODE (generar codigo)",
-                IntentType.QUESTION: "QUESTION (pregunta)",
-                IntentType.CHAT: "CHAT (conversacion)",
-            }.get(self._confirm_intent, "CODE")
-
-            plog.write(
-                f"[bold magenta]Orquestador: Detecte intencion {intent_label}[/bold magenta]"
-            )
-            plog.write("[bold]Que queres hacer?[/bold]")
-            plog.write("")  # blank line
-
-            # Render each option with its action-specific icon and highlight.
-            icons = {
-                "create": "✨",
-                "modify": "🛠️",
-                "bugs": "🐛",
-                "question": "💬",
-                "rewrite": "✏️",
-            }
-            for i, (num, desc, action) in enumerate(self._confirm_options):
-                icon = icons.get(action, "•")
-                if i == self._confirm_selected:
-                    plog.write(
-                        f"  [bold cyan]> [{num}] {icon} {desc}[/bold cyan]"
-                    )
-                else:
-                    plog.write(
-                        f"    [{num}] {icon} {desc}"
-                    )
-
-            plog.write("")
-            plog.write("[dim]Usa ↑/↓ para navegar, Enter para seleccionar, Esc para cancelar[/dim]")
+            self.query_one("#chat-input", Input).focus()
         except Exception:
-            pass  # Widget not ready
+            pass
 
     def on_key(self, event) -> None:  # type: ignore[override]
         """Handle key events at the App level.
@@ -1534,55 +1479,27 @@ class DevFluxApp(App):
             return
 
         if action in {"create", "modify", "bugs"}:
-            team = "bugs" if action == "bugs" else "dev"
             pipeline_text = text
             if action == "modify":
                 pipeline_text = (
-                    "INSTRUCCION DE TRABAJO: modifica los archivos existentes del proyecto. "
-                    "Usa .devflux/context.md y el contenido actual como contexto; no crees "
-                    "archivos duplicados innecesarios.\n\n"
+                    "INSTRUCCIÓN: modifica los archivos existentes que sean funcionales y necesarios; "
+                    "no crees archivos duplicados innecesarios, documentación ni archivos internos.\n\n"
                     f"Solicitud del usuario: {text}"
                 )
 
-            self._log_chat(
-                f"[bold magenta]Orquestador: Ejecutando equipo-{team}...[/bold magenta]"
-            )
-
-            # Keep complexity analysis, but the explicit confirmation controls team.
-            teams, complexity = self._orchestrator.select_team(text, team)
-            roles = self._orchestrator.get_roles()
-
-            self._log_chat(
-                f"[bold magenta]Orquestador: {self._orchestrator.preview()}[/bold magenta]"
-            )
-            self._log_chat(f"[dim]Roles: {', '.join(roles)}[/dim]")
-
-            try:
-                plog = self.query_one("#pipeline-log", RichLog)
-                plog.clear()
-                plog.write(
-                    f"[dim]Pipeline #{self._pipeline_count + 1}: iniciando...[/dim]"
-                )
-            except Exception:
-                pass
-
+            if hasattr(self._orchestrator, "select_user_action"):
+                teams, complexity, roles = self._orchestrator.select_user_action(text, action)
+            else:  # Compatibility for embedders that provide the former router API.
+                team = "bugs" if action == "bugs" else "dev"
+                teams, complexity = self._orchestrator.select_team(text, team)
+                roles = self._orchestrator.get_roles()
+            self._last_retry = (pipeline_text, teams, complexity, roles)
+            self._log_chat("[yellow]Preparando actualización...[/yellow]")
             self.is_running = True
             self._pipeline_count += 1
             self._run_pipeline(pipeline_text, teams, complexity, roles)
 
         elif action == "question":
-
-            self._log_chat(
-                "[dim yellow]Orquestador: Respondiendo pregunta directamente...[/dim yellow]"
-            )
-            try:
-                plog = self.query_one("#pipeline-log", RichLog)
-                plog.clear()
-                plog.write(
-                    "[dim]Pipeline: no se ejecuta (pregunta). Consultando LLM directamente...[/dim]"
-                )
-            except Exception:
-                pass
             self.is_running = True
             self._answer_question(text)
 
@@ -1639,6 +1556,22 @@ class DevFluxApp(App):
             pass
         try:
             self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
+
+    @staticmethod
+    def human_model_error(_exc: Exception) -> str:
+        """Never leak endpoints, stack traces or provider details into chat."""
+        return "No pude conectar con el modelo. Probá de nuevo en unos segundos. [Enter] Reintentar"
+
+    def action_toggle_diagnostics(self) -> None:
+        """Reveal support details only after the explicit Ctrl+D shortcut."""
+        self._diagnostics_visible = not self._diagnostics_visible
+        try:
+            diagnostics = self.query_one("#pipeline-log", RichLog)
+            diagnostics.visible = self._diagnostics_visible
+            if self._diagnostics_visible:
+                diagnostics.scroll_end(animate=False)
         except Exception:
             pass
 

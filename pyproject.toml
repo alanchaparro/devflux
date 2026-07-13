@@ -21,7 +21,10 @@ dependencies = [
 devflux = "devflux.main:main"
 
 [tool.setuptools]
-packages = ["devflux", "devflux.core", "devflux.tui"]
+packages = [
+    "devflux", "devflux.core", "devflux.tui", "devflux.prompts",
+    "devflux.prompts.dev", "devflux.prompts.bugs", "devflux.prompts.repo",
+]
 
 [tool.setuptools.package-data]
 devflux = ["prompts/**/*.j2", "tui/*.tcss"]

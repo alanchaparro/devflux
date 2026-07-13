@@ -1,6 +1,6 @@
 # DevFlux
 
-TUI multi-agente para crear proyectos y trabajar sobre proyectos existentes. Escribí tu idea en el chat y DevFlux clasifica la intención; antes de ejecutar, muestra un menú contextual para que confirmes o corrijas la acción.
+DevFlux es una TUI para crear, continuar, revisar y entender proyectos mediante una conversación simple. Escribí lo que necesitás; DevFlux prepara una propuesta clara y vos decidís cuándo aplicarla.
 
 ## Instalación
 
@@ -16,34 +16,44 @@ pip install -e .
 devflux
 ```
 
-En el primer inicio, un wizard guía la configuración del provider (Ollama local u Ollama Cloud).
+En el primer inicio, un asistente configura el provider (Ollama local u Ollama Cloud).
 
-## Menú contextual de confirmación
+## Experiencia de uso
 
-El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** añade el turno a la conversación y lo enruta con un LLM, pero **nunca** inicia un pipeline; el **segundo Enter** ejecuta la opción que esté resaltada. Usá:
+El menú principal contiene solo:
 
-- **↑ / ↓** para mover la selección (la navegación vuelve del último elemento al primero).
-- **Enter** (una vez abierto el menú) para ejecutar la opción resaltada.
-- **Esc** para cancelar y volver al chat sin ejecutar nada.
+- **Nuevo proyecto**
+- **Continuar proyecto**
+- **Ajustes**
+- **Diagnóstico**
 
-| Acción | Resultado |
-| --- | --- |
-| **Crear proyecto nuevo** | Ejecuta `equipo-dev` para crear un proyecto desde cero. |
-| **Modificar proyecto actual** | Cuando el router devuelve `MODIFY` y hay archivos de proyecto, abre `equipo-dev` tras la confirmación; el prompt pide reutilizar los archivos y `.devflux/context.md` cuando exista. |
-| **Buscar/corregir bugs** | Cuando el router devuelve `BUG`, abre `equipo-bugs` tras la confirmación. |
-| **Responder como pregunta** | Consulta al LLM directamente con el contexto disponible; no ejecuta pipeline. |
-| **Reescribir mi idea** | Restaura el texto en el chat para editarlo y volver a enviarlo. |
+También podés escribir directamente en el chat para crear, modificar, corregir un problema o hacer una pregunta. Las preguntas se responden como conversación y no inician una ejecución de archivos.
 
-### Router conversacional y garantías anti-loop
+Cuando DevFlux entiende un cambio, muestra una única confirmación en lenguaje claro:
 
-Cada envío llama a `Orchestrator.route_conversation()` con cuatro fuentes: todos los `conversation_turns` de la sesión, `active_thread` (`none`, `modify`, `bugs` o `question`), el resumen seguro de `.devflux/context.md` y el inventario de archivos, y el último mensaje. El router devuelve solo `MODIFY`, `BUG`, `QUESTION` o `CLARIFY`, con `temperature=0`, hasta 32 tokens y espera máxima de 10 s. Para compatibilidad con DeepSeek/OpenAI, el parser considera `content`, `reasoning` y los campos de la respuesta cruda —incluido `reasoning_content`—; acepta JSON, JSON dentro de bloques Markdown y etiquetas explícitas, sin inferir rutas por palabras aisladas.
+```text
+Entendí: actualizaré el proyecto actual según tu pedido: ...
+[Enter] Aplicar · [Esc] Cambiar pedido
+```
 
-- **`MODIFY`** abre la confirmación de modificación si existe un proyecto, o de creación en un directorio vacío. Un detalle posterior concreto —por ejemplo, «que el fondo tenga burbujas animadas que al clicar cambien de color»— se reconoce como `MODIFY` dentro del hilo `modify`; no repite la aclaración.
-- **`BUG`** abre la confirmación de `equipo-bugs`; **`QUESTION`** responde directamente sin `PipelineRunner`.
-- **`CLARIFY`** se reserva para mensajes sin una modificación implementable ni una pregunta contestable, como «quiero continuar» sin detalles. Conserva el hilo `modify` o `bugs` y solicita precisión sin lanzar equipos.
-- Si el router no tiene cliente, vence el tiempo, falla o devuelve una salida inválida, DevFlux no muestra el error técnico. Con un hilo activo aplica el fallback semántico (`modify` → **Modificar proyecto actual**, `bugs` → **Buscar/corregir bugs**, `question` → respuesta directa); sin hilo activo abre el selector contextual normal. No reintenta el router, no repite la selección y no inicia un pipeline sin el Enter de confirmación.
+- **Enter** aplica el cambio confirmado.
+- **Esc** vuelve al chat para cambiar el pedido.
+- Si el modelo no está disponible, DevFlux explica el problema sin detalles técnicos y permite reintentar con **Enter**.
+- **Ctrl+D** abre el panel de **Diagnóstico** para soporte. Ahí se consultan los detalles técnicos; el chat normal no muestra providers, modelos, URLs, tokens, roles internos, reintentos ni stack traces.
 
-La selección sigue siendo una confirmación: salvo preguntas, ningún equipo se ejecuta hasta un Enter posterior sobre la opción resaltada. El inventario excluye `.git`, `.devflux`, cachés y secretos, por lo que esos metadatos no convierten un directorio vacío en proyecto existente.
+Los cambios pequeños del proyecto actual usan una ruta rápida. DevFlux elige internamente el flujo proporcional; no expone roles, planificación ni arquitectura como decisiones de la persona usuaria.
+
+## Archivos y panel derecho
+
+El panel derecho muestra los archivos funcionales creados o modificados y sus diferencias. DevFlux filtra documentos e insumos internos como `PRD.md`, `architecture.md`, `plan.md`, `main.md`, Markdown y diagramas Mermaid: no los escribe ni los muestra como resultado del pedido.
+
+## Desarrollo y validación
+
+```bash
+python3 -m pytest -q
+python3 -m compileall -q devflux
+python3 -m build
+```
 
 ## Stack
 
@@ -59,18 +69,17 @@ La selección sigue siendo una confirmación: salvo preguntas, ningún equipo se
 devflux/
 ├── main.py              # Entrypoint + wizard
 ├── core/
-│   ├── config.py        # DevFluxConfig (dataclass + YAML)
-│   ├── credentials.py   # CredentialsStore (API keys, chmod 600)
-│   ├── client.py        # LLMClient (httpx, OpenAI-compatible)
+│   ├── config.py        # DevFluxConfig
+│   ├── client.py        # Cliente LLM compatible con OpenAI
 │   ├── context.py       # Inventario y contexto seguro del proyecto
-│   ├── orchestrator.py  # Clasificación de intención, complejidad y equipos
-│   ├── runner.py        # PipelineRunner (roles, retry, extracción y protección)
-│   └── sessions.py      # SessionRecord + save/list
+│   ├── orchestrator.py  # Enrutamiento conversacional y ruta proporcional
+│   ├── runner.py        # Escritura segura de archivos funcionales
+│   └── sessions.py      # Registro de sesiones
 ├── tui/
-│   ├── app.py           # DevFluxApp y menú contextual de confirmación
+│   ├── app.py           # Chat, confirmación y diagnóstico
 │   └── styles.tcss      # Estilos
 ├── prompts/             # Plantillas Jinja2 por equipo/rol
-└── tests/               # Pruebas de lógica y endurecimiento
+└── tests/               # Pruebas de lógica, UX y endurecimiento
 ```
 
-Para detalles de implementación y validación del menú contextual, ver [`docs/agents/contextual-confirmation.md`](docs/agents/contextual-confirmation.md).
+Para el contrato de mantenimiento destinado a agentes, consultá [`docs/agents/contextual-confirmation.md`](docs/agents/contextual-confirmation.md).
