@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from devflux.core.config import DevFluxConfig
-from devflux.core.orchestrator import IntentType, Orchestrator
+from devflux.core.orchestrator import (
+    IntentType,
+    ModificationRequest,
+    Orchestrator,
+)
 from devflux.tui.app import DevFluxApp, confirmation_for_intent
 
 
@@ -47,6 +51,29 @@ def test_bug_request_defaults_to_bug_pipeline() -> None:
 def test_orchestrator_detects_bug_requests_for_confirmation() -> None:
     assert Orchestrator.is_bug_request("Corregi el error: index.html no carga")
     assert not Orchestrator.is_bug_request("Agrega un boton de contacto")
+
+
+def test_modification_gate_uses_llm_with_project_context_and_safe_fallback() -> None:
+    calls: list[tuple[object, object]] = []
+
+    class Client:
+        def chat(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return SimpleNamespace(content="ACTIONABLE_CHANGE", tokens=1)
+
+    orchestrator = Orchestrator(Client())
+    result = orchestrator.classify_modification_request(
+        "Agrega burbujas animadas al fondo", "Contexto: index.html existe"
+    )
+
+    assert result is ModificationRequest.ACTIONABLE_CHANGE
+    messages, kwargs = calls[0]
+    assert "Contexto: index.html existe" in messages[0]["content"]
+    assert kwargs == {"temperature": 0, "max_tokens": 4, "timeout": 5}
+    assert Orchestrator().classify_modification_request(
+        "quiero continuar mi proyecto", "index.html"
+    ) is ModificationRequest.NEEDS_CLARIFICATION
+
 
 
 def test_chat_submission_defaults_to_create_in_empty_directory(tmp_path, monkeypatch) -> None:
@@ -102,6 +129,12 @@ def test_escape_binding_cancels_confirmation() -> None:
 
 def test_modify_and_bug_actions_force_the_selected_pipeline() -> None:
     app = DevFluxApp()
+    app._orchestrator = SimpleNamespace(
+        classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
+        select_team=lambda _text, team: ([team], "simple"),
+        get_roles=lambda: ["bug-intake"],
+        preview=lambda: "equipo-dev",
+    )
     app._log_chat = lambda _message: None  # type: ignore[method-assign]
     app.query_one = lambda *_args: (_ for _ in ()).throw(RuntimeError())  # type: ignore[method-assign]
     calls: list[tuple[str, list[str], object, list[str]]] = []
@@ -134,10 +167,10 @@ def test_modify_and_bug_actions_force_the_selected_pipeline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_first_enter_only_opens_modify_confirmation_and_second_confirms(
+async def test_vague_modify_request_asks_for_clarification_without_running_pipeline(
     tmp_path, monkeypatch
 ) -> None:
-    """A new submission must never consume its own confirmation Enter key."""
+    """A vague continuation must not spend tokens by launching equipo-dev."""
     (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     app = DevFluxApp()
@@ -146,10 +179,13 @@ async def test_first_enter_only_opens_modify_confirmation_and_second_confirms(
     app._run_pipeline = lambda prompt, teams, complexity, roles: pipeline_calls.append(  # type: ignore[method-assign]
         (prompt, teams, complexity, roles)
     )
+    pipeline_log: list[str] = []
+    app._log_pipeline = pipeline_log.append  # type: ignore[method-assign]
 
     async with app.run_test() as pilot:
         app._orchestrator = SimpleNamespace(
             classify_intent=lambda _text: IntentType.CHAT,
+            classify_modification_request=lambda _text, _context: ModificationRequest.NEEDS_CLARIFICATION,
             select_team=lambda _text, team: ([team], "simple"),
             get_roles=lambda: ["analyst"],
             preview=lambda: "equipo-dev",
@@ -167,5 +203,71 @@ async def test_first_enter_only_opens_modify_confirmation_and_second_confirms(
         await pilot.press("enter")
 
         assert app._confirm_mode is False
+        assert app.pending_modify_clarification is True
+        assert app.is_running is False
+        assert pipeline_calls == []
+        assert any("¿Qué querés agregar, cambiar o corregir" in message for message in pipeline_log)
+
+
+@pytest.mark.asyncio
+async def test_clarification_follow_up_offers_modify_and_waits_for_confirmation(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    pipeline_calls: list[tuple[str, list[str], object, list[str]]] = []
+    app._run_pipeline = lambda prompt, teams, complexity, roles: pipeline_calls.append(  # type: ignore[method-assign]
+        (prompt, teams, complexity, roles)
+    )
+    pipeline_log: list[str] = []
+    app._log_pipeline = pipeline_log.append  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        app._orchestrator = SimpleNamespace(
+            classify_intent=lambda _text: IntentType.CODE,
+            classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
+            select_team=lambda _text, team: ([team], "simple"),
+            get_roles=lambda: ["analyst"],
+            preview=lambda: "equipo-dev",
+        )
+        app.pending_modify_clarification = True
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "agrega burbujas animadas al fondo"
+
+        await pilot.press("enter")
+
+        assert app.pending_modify_clarification is False
+        assert app._confirm_mode is True
+        assert app._confirm_options[app._confirm_selected][2] == "modify"
+        assert pipeline_calls == []
+
+        await pilot.press("enter")
+
+        assert app._confirm_mode is False
         assert app.is_running is True
         assert len(pipeline_calls) == 1
+
+
+def test_modify_action_runs_when_llm_marks_request_actionable() -> None:
+    app = DevFluxApp()
+    app._orchestrator = SimpleNamespace(
+        classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
+        select_team=lambda _text, team: ([team], "simple"),
+        get_roles=lambda: ["analyst"],
+        preview=lambda: "equipo-dev",
+    )
+    app._log_chat = lambda _message: None  # type: ignore[method-assign]
+    app.query_one = lambda *_args: (_ for _ in ()).throw(RuntimeError())  # type: ignore[method-assign]
+    calls: list[object] = []
+    app._run_pipeline = lambda *args: calls.append(args)  # type: ignore[method-assign]
+    app._confirm_mode = True
+    app._confirm_text = "Cambia el boton principal a verde"
+    app._confirm_options, app._confirm_selected = confirmation_for_intent(
+        IntentType.CODE, has_existing_project=True
+    )
+
+    app._handle_confirm_select()
+
+    assert len(calls) == 1

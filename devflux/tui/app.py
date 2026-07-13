@@ -67,6 +67,7 @@ from ..core.orchestrator import (
     Orchestrator,
     Complexity,
     IntentType,
+    ModificationRequest,
     COMPLEXITY_ROLES,
     COMPLEXITY_TOKENS,
 )
@@ -316,6 +317,9 @@ class DevFluxApp(App):
         self._confirm_selected: int = 0
         self._confirm_intent: IntentType = IntentType.CODE
         self._confirm_text: str = ""
+        # A vague modification must receive a concrete follow-up before a team runs.
+        self.pending_modify_clarification: bool = False
+        self._pending_clarification_action: str | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the main layout."""
@@ -581,6 +585,31 @@ class DevFluxApp(App):
 
         # FEATURE: Memoria de sesion — track user input for context saving
         self._last_user_input = text
+
+        # A clarification reply is interpreted as the requested project change,
+        # not as a fresh generic request. It still receives confirmation.
+        if self.pending_modify_clarification or self._pending_clarification_action:
+            pending_action = self._pending_clarification_action or "modify"
+            decision = self._orchestrator.classify_modification_request(
+                text, load_context_for_prompt(Path.cwd())
+            )
+            if decision is ModificationRequest.NEEDS_CLARIFICATION:
+                self._show_clarification(pending_action)
+                return
+            self.pending_modify_clarification = False
+            self._pending_clarification_action = None
+            self._confirm_mode = True
+            self._confirm_text = text
+            self._confirm_intent = IntentType.CODE
+            self._confirm_options, _unused_selected = confirmation_for_intent(
+                IntentType.CODE, has_existing_project=True
+            )
+            self._confirm_selected = next(
+                i for i, (_number, _description, action) in enumerate(self._confirm_options)
+                if action == pending_action
+            )
+            self._show_confirmation()
+            return
 
         # FEATURE 2: Classify intent BEFORE anything else
         intent = self._orchestrator.classify_intent(text)
@@ -1436,6 +1465,17 @@ class DevFluxApp(App):
         # Exit confirm mode
         self._confirm_mode = False
 
+        # Never launch a team for a vague existing-project modification or bug report.
+        if action in {"modify", "bugs"}:
+            decision = self._orchestrator.classify_modification_request(
+                text, load_context_for_prompt(Path.cwd())
+            )
+            if decision is ModificationRequest.NEEDS_CLARIFICATION:
+                self._pending_clarification_action = action
+                self.pending_modify_clarification = action == "modify"
+                self._show_clarification(action)
+                return
+
         if action in {"create", "modify", "bugs"}:
             team = "bugs" if action == "bugs" else "dev"
             pipeline_text = text
@@ -1505,6 +1545,30 @@ class DevFluxApp(App):
                 chat_input.focus()
             except Exception:
                 pass
+
+    def _show_clarification(self, action: str) -> None:
+        """Ask for concrete work without invoking a pipeline."""
+        if action == "bugs":
+            message = (
+                "Perfecto. ¿Qué error o comportamiento querés corregir? "
+                "Contame qué pasa y, si podés, en qué pantalla o archivo."
+            )
+        else:
+            message = (
+                "Perfecto. ¿Qué querés agregar, cambiar o corregir en tu proyecto? "
+                "Describímelo y preparo la modificación."
+            )
+        self._log_chat(f"[cyan]{message}[/cyan]")
+        try:
+            plog = self.query_one("#pipeline-log", RichLog)
+            plog.clear()
+        except Exception:
+            pass
+        self._log_pipeline(f"[cyan]{message}[/cyan]")
+        try:
+            self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
 
     def _cancel_confirmation(self) -> None:
         """Cancel confirmation mode and return to normal state."""

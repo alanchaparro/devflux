@@ -43,6 +43,13 @@ class IntentType(Enum):
     CHAT = "chat"          # Casual greeting/chat → respond directly
 
 
+class ModificationRequest(Enum):
+    """Whether an existing-project request is specific enough to run."""
+
+    ACTIONABLE_CHANGE = "ACTIONABLE_CHANGE"
+    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+
+
 # Lesson 12: roles per complexity level
 COMPLEXITY_ROLES: dict[Complexity, list[str]] = {
     Complexity.SIMPLE: ["analista", "arquitecto", "frontend"],
@@ -98,6 +105,21 @@ _CLASSIFY_SYSTEM_PROMPT = (
     "programa, escribi, desarrolla, arma), es QUESTION.\n\n"
     "Respondi EXACTAMENTE con UNA sola palabra: CODE, QUESTION o CHAT. "
     "Nada mas. Sin puntuacion. Sin explicacion."
+)
+
+_ACTIONABILITY_SYSTEM_PROMPT = (
+    "Sos un clasificador de solicitudes para un proyecto existente. "
+    "Decidi si el usuario describio un cambio concreto que se pueda implementar.\n\n"
+    "ACTIONABLE_CHANGE: pide agregar, cambiar, quitar o corregir algo identificable.\n"
+    'Ejemplos: "agrega burbujas animadas al fondo", "cambia el boton a verde", '
+    '"arregla el contador que no incrementa".\n\n'
+    "NEEDS_CLARIFICATION: solo expresa deseo de continuar, modificar, avanzar o mejorar "
+    "sin decir que cambio concreto quiere.\n"
+    'Ejemplos: "quiero continuar mi proyecto", "quiero modificar algo", "seguimos", '
+    '"mejoralo", "quiero avanzar".\n\n'
+    "El contexto confirma que existe un proyecto, pero NO convierte una solicitud vaga en "
+    "una tarea concreta. Ante cualquier duda responde NEEDS_CLARIFICATION.\n\n"
+    "Responde EXACTAMENTE una sola etiqueta: ACTIONABLE_CHANGE o NEEDS_CLARIFICATION."
 )
 
 
@@ -183,6 +205,46 @@ class Orchestrator:
             user_input,
             f"LLM: {raw} ({elapsed:.2f}s, {response.tokens} tokens)",
             f"{result.value.upper()}"
+        )
+        return result
+
+    def classify_modification_request(
+        self, user_input: str, project_context: str
+    ) -> ModificationRequest:
+        """Gate existing-project changes with a tiny, conservative LLM call."""
+        if self._llm_client is None:
+            self._debug_log_classify(user_input, "NO_LLM_CLIENT", "NEEDS_CLARIFICATION")
+            return ModificationRequest.NEEDS_CLARIFICATION
+
+        messages = [
+            {
+                "role": "system",
+                "content": f"{_ACTIONABILITY_SYSTEM_PROMPT}\n\n{project_context}",
+            },
+            {"role": "user", "content": user_input},
+        ]
+        try:
+            t0 = time.time()
+            response = self._llm_client.chat(
+                messages, temperature=0, max_tokens=4, timeout=5
+            )
+            elapsed = time.time() - t0
+        except Exception as exc:
+            self._debug_log_classify(
+                user_input, f"ACTIONABILITY ERROR: {exc}", "NEEDS_CLARIFICATION"
+            )
+            return ModificationRequest.NEEDS_CLARIFICATION
+
+        raw = response.content.strip().upper() if response.content else ""
+        result = (
+            ModificationRequest.ACTIONABLE_CHANGE
+            if raw == ModificationRequest.ACTIONABLE_CHANGE.value
+            else ModificationRequest.NEEDS_CLARIFICATION
+        )
+        self._debug_log_classify(
+            user_input,
+            f"ACTIONABILITY LLM: {raw} ({elapsed:.2f}s, {response.tokens} tokens)",
+            result.value,
         )
         return result
 

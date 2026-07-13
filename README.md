@@ -29,8 +29,8 @@ El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** envía 
 | Acción | Resultado |
 | --- | --- |
 | **Crear proyecto nuevo** | Ejecuta `equipo-dev` para crear un proyecto desde cero. |
-| **Modificar proyecto actual** | Ejecuta `equipo-dev` sobre el proyecto existente, incluyendo la instrucción de reutilizar los archivos y `.devflux/context.md` cuando exista. |
-| **Buscar/corregir bugs** | Ejecuta `equipo-bugs` sobre los archivos existentes. |
+| **Modificar proyecto actual** | Primero verifica que el pedido describa un cambio concreto; solo entonces, tras confirmar, ejecuta `equipo-dev` sobre el proyecto existente e incluye la instrucción de reutilizar los archivos y `.devflux/context.md` cuando exista. |
+| **Buscar/corregir bugs** | Primero verifica que se haya descrito un error concreto; solo entonces, tras confirmar, ejecuta `equipo-bugs` sobre los archivos existentes. |
 | **Responder como pregunta** | Consulta al LLM directamente con el contexto disponible; no ejecuta pipeline. |
 | **Reescribir mi idea** | Restaura el texto en el chat para editarlo y volver a enviarlo. |
 
@@ -45,6 +45,15 @@ La lista completa siempre está disponible; DevFlux solo preselecciona la opció
 5. En un directorio sin archivos de proyecto visibles, preselecciona **Crear proyecto nuevo**.
 
 La detección de proyecto existente usa el inventario de contexto de DevFlux, que excluye metadatos y archivos no confiables como `.git`, `.devflux`, cachés y secretos. La selección sigue siendo una confirmación: tras el primer Enter podés elegir cualquiera de las cinco acciones antes de que se haga una llamada al LLM o se ejecute un pipeline.
+
+### Gate de modificaciones y protección anti-gasto
+
+Al confirmar **Modificar proyecto actual** o **Buscar/corregir bugs**, DevFlux evalúa si el texto es una solicitud implementable:
+
+- **`ACTIONABLE_CHANGE`**: identifica algo para agregar, cambiar, quitar o corregir (por ejemplo, «cambiá el botón principal a verde» o «el contador no incrementa»). DevFlux abre o conserva la confirmación correspondiente; solo el siguiente **Enter** inicia el equipo.
+- **`NEEDS_CLARIFICATION`**: el pedido solo expresa intención de continuar, modificar, mejorar o avanzar, sin indicar qué trabajo realizar (por ejemplo, «quiero continuar mi proyecto»). DevFlux pide detalle y queda pendiente: no crea ni ejecuta `PipelineRunner`.
+
+El clasificador recibe el inventario seguro del proyecto y usa una consulta acotada y conservadora (`temperature=0`, hasta 4 tokens y 5 s de espera). Si no hay cliente LLM, falla la consulta o la respuesta no es exactamente `ACTIONABLE_CHANGE`, toma la decisión segura `NEEDS_CLARIFICATION`. Así se evita gastar el presupuesto del pipeline en una tarea ambigua. La respuesta concreta posterior se vuelve a validar, reabre el selector con **Modificar proyecto actual** (o **Buscar/corregir bugs**) seleccionado y todavía requiere una confirmación explícita antes de ejecutar el pipeline.
 
 ## Stack
 
