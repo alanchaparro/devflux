@@ -115,6 +115,19 @@ class Orchestrator:
         self._roles: list[str] = []
         self._llm_client: LLMClient | None = llm_client
 
+    @staticmethod
+    def is_bug_request(user_input: str) -> bool:
+        """Return whether a request explicitly describes a bug or error."""
+        text = user_input.lower()
+        return any(keyword in text for keyword in BUG_KEYWORDS)
+
+    def select_team(self, user_input: str, team: str) -> tuple[list[str], Complexity]:
+        """Classify complexity, then force the confirmation-selected team."""
+        _teams, complexity = self.classify(user_input)
+        self.teams = [team]
+        self._roles = self._compute_roles()
+        return self.teams, complexity
+
     def classify_intent(self, user_input: str) -> IntentType:
         """Classify the high-level intent of the user input using LLM.
 

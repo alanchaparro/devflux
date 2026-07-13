@@ -104,19 +104,37 @@ THEMES = ["neon", "dracula", "monokai", "nord", "gruvbox", "tokyo-night"]
 SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
 
 
-def confirmation_for_intent(intent: IntentType) -> tuple[list[tuple[str, str, str]], int]:
-    """Return user-facing confirmation choices with a safe intent-aware default."""
+def confirmation_for_intent(
+    intent: IntentType,
+    *,
+    has_existing_project: bool = False,
+    is_bug_request: bool = False,
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Return every confirmation action and its context-sensitive default.
+
+    ``has_existing_project`` must come from ``load_context_files`` so hidden
+    metadata (for example ``.devflux`` and ``.git``) cannot make an empty
+    directory look like an existing project.
+    """
+    options = [
+        ("1", "Crear proyecto nuevo — equipo-dev para un proyecto nuevo", "create"),
+        (
+            "2",
+            "Modificar proyecto actual — equipo-dev con contexto y archivos existentes",
+            "modify",
+        ),
+        ("3", "Buscar/corregir bugs — equipo-bugs sobre archivos existentes", "bugs"),
+        ("4", "Responder como pregunta — LLM directo con contexto del proyecto", "question"),
+        ("5", "Reescribir mi idea", "rewrite"),
+    ]
+
     if intent in (IntentType.QUESTION, IntentType.CHAT):
-        return [
-            ("1", "Responder ahora", "question"),
-            ("2", "Convertir en tarea de codigo", "pipeline"),
-            ("3", "Reescribir mi mensaje", "rewrite"),
-        ], 0
-    return [
-        ("1", "Crear proyecto", "pipeline"),
-        ("2", "Responder como pregunta", "question"),
-        ("3", "Reescribir mi idea", "rewrite"),
-    ], 0
+        return options, 3
+    if is_bug_request:
+        return options, 2
+    if has_existing_project:
+        return options, 1
+    return options, 0
 
 
 class MenuWidget(Static):
@@ -557,8 +575,13 @@ class DevFluxApp(App):
         self._confirm_mode = True
         self._confirm_text = text
         self._confirm_intent = intent
-        # Use a safe default that matches the detected intent.
-        self._confirm_options, self._confirm_selected = confirmation_for_intent(intent)
+        # The project inventory excludes .devflux, .git, caches, and secrets.
+        has_existing_project = bool(load_context_files(Path.cwd()))
+        self._confirm_options, self._confirm_selected = confirmation_for_intent(
+            intent,
+            has_existing_project=has_existing_project,
+            is_bug_request=Orchestrator.is_bug_request(text),
+        )
 
         # Show confirmation in pipeline log
         self._show_confirmation()
@@ -1097,7 +1120,12 @@ class DevFluxApp(App):
             menu_widget.update("")
 
     def action_close_menu(self) -> None:
-        """Close menu (Escape)."""
+        """Close a menu or cancel contextual confirmation with Escape."""
+        # Escape is a priority binding, so it arrives here before App.on_key.
+        if self._confirm_mode:
+            self._cancel_confirmation()
+            return
+
         self.show_menu = False
         self.show_settings = False
         self._settings_input_mode = None  # Cancel any settings input mode
@@ -1329,10 +1357,16 @@ class DevFluxApp(App):
             plog.write("[bold]Que queres hacer?[/bold]")
             plog.write("")  # blank line
 
-            # Render each option with highlight on selected
-            icons = ["✨", "💬", "✏️"]
-            for i, (num, desc, _action) in enumerate(self._confirm_options):
-                icon = icons[i] if i < len(icons) else "•"
+            # Render each option with its action-specific icon and highlight.
+            icons = {
+                "create": "✨",
+                "modify": "🛠️",
+                "bugs": "🐛",
+                "question": "💬",
+                "rewrite": "✏️",
+            }
+            for i, (num, desc, action) in enumerate(self._confirm_options):
+                icon = icons.get(action, "•")
                 if i == self._confirm_selected:
                     plog.write(
                         f"  [bold cyan]> [{num}] {icon} {desc}[/bold cyan]"
@@ -1390,23 +1424,30 @@ class DevFluxApp(App):
         # Exit confirm mode
         self._confirm_mode = False
 
-        if action == "pipeline":
-            # Run the full pipeline
+        if action in {"create", "modify", "bugs"}:
+            team = "bugs" if action == "bugs" else "dev"
+            pipeline_text = text
+            if action == "modify":
+                pipeline_text = (
+                    "INSTRUCCION DE TRABAJO: modifica los archivos existentes del proyecto. "
+                    "Usa .devflux/context.md y el contenido actual como contexto; no crees "
+                    "archivos duplicados innecesarios.\n\n"
+                    f"Solicitud del usuario: {text}"
+                )
+
             self._log_chat(
-                f"[bold magenta]Orquestador: Ejecutando pipeline...[/bold magenta]"
+                f"[bold magenta]Orquestador: Ejecutando equipo-{team}...[/bold magenta]"
             )
 
-            # Classify team and complexity
-            teams, complexity = self._orchestrator.classify(text)
+            # Keep complexity analysis, but the explicit confirmation controls team.
+            teams, complexity = self._orchestrator.select_team(text, team)
             roles = self._orchestrator.get_roles()
 
-            # Show preview
             self._log_chat(
                 f"[bold magenta]Orquestador: {self._orchestrator.preview()}[/bold magenta]"
             )
             self._log_chat(f"[dim]Roles: {', '.join(roles)}[/dim]")
 
-            # Clear pipeline log for new run
             try:
                 plog = self.query_one("#pipeline-log", RichLog)
                 plog.clear()
@@ -1416,13 +1457,12 @@ class DevFluxApp(App):
             except Exception:
                 pass
 
-            # Start pipeline worker
             self.is_running = True
             self._pipeline_count += 1
-            self._run_pipeline(text, teams, complexity, roles)
+            self._run_pipeline(pipeline_text, teams, complexity, roles)
 
         elif action == "question":
-            # Answer directly with LLM
+
             self._log_chat(
                 "[dim yellow]Orquestador: Respondiendo pregunta directamente...[/dim yellow]"
             )
