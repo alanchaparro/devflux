@@ -41,20 +41,25 @@ from __future__ import annotations
 
 import difflib
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
+    Button,
     Header,
     Footer,
     Static,
     Input,
+    OptionList,
     RichLog,
 )
+from textual.widgets.option_list import Option
 from textual.reactive import reactive
 from rich.text import Text
 from rich.panel import Panel
@@ -114,6 +119,179 @@ SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
 
 # The interface exposes friendly labels only. Canonical keys stay internal.
 PROVIDER_CHOICES = [("Ollama Cloud", "ollama-cloud"), ("Ollama Local", "ollama-local")]
+
+
+@dataclass(frozen=True)
+class SettingsResult:
+    """A fully selected configuration, returned only when the user saves."""
+
+    provider: str
+    model: str
+    api_key: str | None = None
+
+
+class SettingsScreen(ModalScreen[SettingsResult | None]):
+    """Fullscreen configuration editor that keeps all edits local until save."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancelar", priority=True)]
+
+    def __init__(self, config: DevFluxConfig, has_existing_key: bool) -> None:
+        super().__init__()
+        self.draft_provider = config.provider
+        self.draft_model = config.model
+        self._has_existing_key = has_existing_key
+        self._models: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("[bold]Ajustes[/bold]", id="settings-title"),
+            Static(
+                "Usá Tab para cambiar de sección, ↑/↓ para navegar y Enter para elegir.",
+                id="settings-help",
+            ),
+            Horizontal(
+                Vertical(
+                    Static("[bold]Provider[/bold]", classes="settings-label"),
+                    OptionList(
+                        *[Option(label) for label, _provider in PROVIDER_CHOICES],
+                        id="settings-provider",
+                    ),
+                    id="settings-provider-pane",
+                ),
+                Vertical(
+                    Static("[bold]Modelo[/bold]", classes="settings-label"),
+                    OptionList(id="settings-model"),
+                    id="settings-model-pane",
+                ),
+                id="settings-selection-row",
+            ),
+            Vertical(
+                Static(id="settings-provider-note"),
+                Static("API key", id="settings-api-key-label"),
+                Input(
+                    placeholder="Pegá una nueva API key (no se muestra la existente)",
+                    password=True,
+                    id="settings-api-key",
+                ),
+                id="settings-credential-pane",
+            ),
+            Static(id="settings-model-error"),
+            Horizontal(
+                Button("Reintentar", id="settings-retry", variant="warning"),
+                Button("Volver", id="settings-back"),
+                Button("Cancelar", id="settings-cancel"),
+                Button("Guardar cambios", id="settings-save", variant="success"),
+                id="settings-actions",
+            ),
+            id="settings-panel",
+        )
+
+    def on_mount(self) -> None:
+        provider_list = self.query_one("#settings-provider", OptionList)
+        provider_list.highlighted = [key for _label, key in PROVIDER_CHOICES].index(self.draft_provider)
+        self._load_models()
+        provider_list.focus()
+
+    def _load_models(self) -> None:
+        """Populate the wide, scrollable model list without leaking failures."""
+        model_list = self.query_one("#settings-model", OptionList)
+        error = self.query_one("#settings-model-error", Static)
+        retry = self.query_one("#settings-retry", Button)
+        back = self.query_one("#settings-back", Button)
+        try:
+            models = list(PROVIDERS[self.draft_provider]["models"])
+            if not models:
+                raise RuntimeError("empty model catalog")
+        except Exception:
+            self._models = []
+            model_list.clear_options()
+            model_list.visible = False
+            error.update("No pudimos cargar los modelos. Podés reintentar o volver sin guardar.")
+            error.visible = True
+            retry.visible = True
+            back.visible = True
+            return
+
+        self._models = models
+        if self.draft_model not in models:
+            self.draft_model = models[0]
+        model_list.clear_options()
+        model_list.add_options([Option(model) for model in models])
+        model_list.highlighted = models.index(self.draft_model)
+        model_list.visible = True
+        error.visible = False
+        retry.visible = False
+        back.visible = False
+        self._update_provider_details()
+
+    def _update_provider_details(self) -> None:
+        info = PROVIDERS[self.draft_provider]
+        key_input = self.query_one("#settings-api-key", Input)
+        key_label = self.query_one("#settings-api-key-label", Static)
+        note = self.query_one("#settings-provider-note", Static)
+        cloud = bool(info["needs_key"])
+        key_input.visible = cloud
+        key_label.visible = cloud
+        if cloud:
+            note.update(
+                "Ollama Cloud. "
+                + ("Hay una API key configurada; podés reemplazarla." if self._has_existing_key else "Agregá una API key para conectarte.")
+            )
+        else:
+            note.update("Ollama Local. Elegí el modelo para usar con tu instancia local; no requiere API key.")
+
+    @on(OptionList.OptionSelected, "#settings-provider")
+    def select_provider(self, event: OptionList.OptionSelected) -> None:
+        self.draft_provider = PROVIDER_CHOICES[event.option_index][1]
+        self.draft_model = PROVIDERS[self.draft_provider]["models"][0]
+        self._load_models()
+        self.query_one("#settings-model", OptionList).focus()
+
+    @on(OptionList.OptionSelected, "#settings-model")
+    def select_model(self, event: OptionList.OptionSelected) -> None:
+        if self._models:
+            self.draft_model = self._models[event.option_index]
+
+    @on(Button.Pressed)
+    def press_button(self, event: Button.Pressed) -> None:
+        if event.button.id == "settings-save":
+            self.action_save()
+        elif event.button.id in {"settings-cancel", "settings-back"}:
+            self.action_cancel()
+        elif event.button.id == "settings-retry":
+            self._load_models()
+
+    def activate_focused(self) -> None:
+        """Honor the app-wide priority Enter binding while this modal is open."""
+        provider_list = self.query_one("#settings-provider", OptionList)
+        model_list = self.query_one("#settings-model", OptionList)
+        if provider_list.has_focus and provider_list.highlighted is not None:
+            self.draft_provider = PROVIDER_CHOICES[provider_list.highlighted][1]
+            self.draft_model = PROVIDERS[self.draft_provider]["models"][0]
+            self._load_models()
+            model_list.focus()
+            return
+        if model_list.has_focus and model_list.highlighted is not None and self._models:
+            self.draft_model = self._models[model_list.highlighted]
+            return
+        for button in self.query(Button):
+            if button.has_focus:
+                if button.id == "settings-save":
+                    self.action_save()
+                elif button.id in {"settings-cancel", "settings-back"}:
+                    self.action_cancel()
+                elif button.id == "settings-retry":
+                    self._load_models()
+                return
+
+    def action_save(self) -> None:
+        if not self._models:
+            return
+        key = self.query_one("#settings-api-key", Input).value.strip()
+        self.dismiss(SettingsResult(self.draft_provider, self.draft_model, key or None))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 def is_project_continuation_request(text: str) -> bool:
@@ -481,6 +659,13 @@ class DevFluxApp(App):
         # FEATURE 3: In confirm mode, Enter selects the highlighted option
         if self._confirm_mode:
             self._handle_confirm_select()
+            return
+
+        # The app owns a priority Enter binding. Explicitly hand it to the
+        # fullscreen modal so OptionList and visible action buttons remain
+        # entirely keyboard-driven.
+        if isinstance(self.screen, SettingsScreen):
+            self.screen.activate_focused()
             return
 
         # A selector owns Enter while visible. The app-level binding has
@@ -1272,6 +1457,9 @@ class DevFluxApp(App):
     def action_close_menu(self) -> None:
         """Close a menu or cancel contextual confirmation with Escape."""
         # Escape is a priority binding, so it arrives here before App.on_key.
+        if self._screen_stack and isinstance(self.screen, SettingsScreen):
+            self.screen.action_cancel()
+            return
         if self._confirm_mode:
             self._cancel_confirmation()
             return
@@ -1317,7 +1505,7 @@ class DevFluxApp(App):
         elif item == "Continuar proyecto":
             self._log_chat("Contame qué querés cambiar o revisar del proyecto actual.")
         elif item == "Ajustes":
-            self._show_settings()
+            self._open_settings()
         elif item == "Diagnóstico":
             self.action_toggle_diagnostics()
 
@@ -1332,15 +1520,48 @@ class DevFluxApp(App):
         self._log_chat(f"[bold cyan]Tema: {self._current_theme}[/bold cyan]")
         self._log_chat(f"[dim]Temas disponibles: {', '.join(THEMES)}[/dim]")
 
-    # --- Settings handling (FEATURE 1: expanded Ajustes submenu) ---
+    # --- Settings handling ---
+
+    def _open_settings(self) -> None:
+        """Open the configuration editor above the whole application, not the menu."""
+        if self._config is None:
+            return
+        self.push_screen(
+            SettingsScreen(self._config, self._creds.has_key(self._config.provider)),
+            self._apply_settings_result,
+        )
+
+    def _apply_settings_result(self, result: SettingsResult | None) -> None:
+        """Persist a confirmed draft and restore the chat without changing its thread."""
+        if result is None or self._config is None:
+            try:
+                self.query_one("#chat-input", Input).focus()
+            except Exception:
+                pass
+            return
+
+        info = PROVIDERS[result.provider]
+        self._config.provider = result.provider
+        self._config.base_url = info["base_url"]
+        self._config.model = result.model
+        self._config.save()
+        if result.api_key:
+            self._creds.set(result.provider, result.api_key)
+        try:
+            if self._client:
+                self._client.close()
+        except Exception:
+            pass
+        self._client = LLMClient(self._config, self._creds)
+        self._log_chat("[bold green]Ajustes guardados.[/bold green]")
+        try:
+            self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
 
     def _show_settings(self) -> None:
-        """Show settings menu."""
-        self.show_settings = True
-        menu_widget = self.query_one("#menu-widget", MenuWidget)
-        menu_widget.set_menu(SETTINGS_ITEMS, "Ajustes", self._on_settings_select)
-        menu_widget.visible = True
-        menu_widget.focus()
+        """Compatibility alias for callers of the previous embedded settings UI."""
+        self._open_settings()
 
     def _on_settings_select(self, item: str | None) -> None:
         """Handle settings selection. FEATURE 1: expanded options."""

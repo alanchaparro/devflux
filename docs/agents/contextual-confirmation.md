@@ -23,11 +23,12 @@ No introducir en el chat términos internos: nombres de equipos/roles, complejid
 
 ## Selector de modelo y proveedor
 
-El asistente inicial y **Ajustes** usan un selector navegable: **↑/↓** cambia la opción, **Enter** la confirma y **Esc** cancela la selección. En el asistente inicial, cancelar vuelve al selector de proveedor; en Ajustes, cierra el selector. Las únicas etiquetas visibles son **Ollama Cloud** y **Ollama Local**; no reemplazarlas por claves de configuración ni habilitar un campo de texto para proveedor o modelo.
+El asistente inicial y **Ajustes** usan un selector navegable: **↑/↓** cambia la opción y **Enter** la confirma. El asistente inicial cancela al selector de proveedor. **Ajustes** es un `SettingsScreen` modal a pantalla completa: **Esc** o **Cancelar** lo cierran y descartan todo el borrador. Sus listas de proveedor y modelo son `OptionList` desplazables; el proveedor y modelo vigentes deben abrirse resaltados, y **Tab** mueve el foco entre secciones. Las únicas etiquetas visibles son **Ollama Cloud** y **Ollama Local**; no reemplazarlas por claves de configuración ni habilitar un campo de texto para proveedor o modelo.
 
-- **Ollama Cloud** solicita una API key como único campo manual y, tras confirmarla, muestra el selector de modelo.
+- **Ollama Cloud** muestra una API key como único campo manual. Es un campo secreto vacío destinado solo a reemplazar la clave existente; jamás precargarla, mostrarla ni registrarla.
 - **Ollama Local** no solicita API key y pasa directamente al selector de modelo.
-- Al abrir el cambio de proveedor en **Ajustes**, el proveedor en uso debe quedar preseleccionado; el modelo se confirma en un segundo selector.
+- Al abrir **Ajustes**, el proveedor y modelo en uso deben quedar preseleccionados. No mutar configuración, credenciales ni cliente mientras se navega el borrador: solo **Guardar cambios** persiste proveedor/base URL/modelo, guarda una nueva API key si se ingresó, recrea el cliente y muestra `Ajustes guardados.`.
+- Si no se puede cargar un catálogo, ocultar su lista y mostrar un mensaje humano sin detalles técnicos con **Reintentar** y **Volver**; volver descarta el borrador.
 - La API key es secreta: no registrarla, interpolarla en mensajes, mostrarla en diagnóstico ni incluirla en pruebas, capturas o documentación. Solo se puede informar si está configurada.
 
 El estado persistido de instalaciones previas debe seguir funcionando aunque contenga variantes tipográficas de guiones; la interfaz continúa usando exclusivamente los nombres humanos anteriores.
@@ -77,7 +78,7 @@ No convertir esta decisión en una opción de UI ni mostrar roles o etapas al us
 | Responsabilidad | Archivo | Evidencia |
 | --- | --- | --- |
 | Chat, confirmación, diagnóstico y reintento | `devflux/tui/app.py` | `tests/test_user_experience.py`, `tests/test_tui_logic.py` |
-| Selector inicial y de Ajustes, más compatibilidad de configuración | `devflux/tui/app.py`, `devflux/core/config.py`, `devflux/core/credentials.py` | `tests/test_provider_wizard.py` |
+| Selector inicial y modal fullscreen de Ajustes, más compatibilidad de configuración | `devflux/tui/app.py`, `devflux/tui/styles.tcss`, `devflux/core/config.py`, `devflux/core/credentials.py` | `tests/test_provider_wizard.py`, `tests/test_settings_modal.py` |
 | Rutas y fast path | `devflux/core/orchestrator.py` | `tests/test_user_experience.py` |
 | Filtrado y escritura | `devflux/core/runner.py` | `tests/test_user_experience.py`, pruebas de hardening |
 | Prompt de edición rápida | `devflux/prompts/dev/implementer.j2` | build de paquete |
@@ -92,4 +93,4 @@ python3 -m build
 git diff --check
 ```
 
-Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; la secuencia de progreso sin anuncios falsos; un Enter de reintento sin duplicación; cancelación del reintento; desarme del reintento tras éxito; fast path; y filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar.
+Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; la secuencia de progreso sin anuncios falsos; un Enter de reintento sin duplicación; cancelación del reintento; desarme del reintento tras éxito; fast path; filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar; y Ajustes fullscreen (preselección, catálogo largo navegable, cancelación sin persistencia, guardado y error de catálogo recuperable).

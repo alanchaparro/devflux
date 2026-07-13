@@ -14,6 +14,8 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - Pruebas de experiencia de usuario para confirmación, preguntas sin pipeline, errores recuperables, ruta rápida, reintentos y filtrado de archivos internos.
 - Selector navegable de proveedor y modelo con **↑/↓**, **Enter** y **Esc** durante el asistente inicial y en Ajustes.
 - Pruebas del asistente de proveedor/modelo, incluido el flujo sin API key de **Ollama Local** y la selección preestablecida en Ajustes.
+- Editor de **Ajustes** a pantalla completa, con listas de proveedor y catálogo de modelos navegables/desplazables, modelo activo resaltado y controles de guardar o cancelar.
+- Pruebas de la pantalla completa de Ajustes: cancelación sin persistencia, guardado de proveedor/modelo/API key secreta, catálogo extenso y error recuperable al cargar modelos.
 
 ### Changed
 - Las preguntas se responden como chat; las decisiones internas de router, equipos, roles y complejidad ya no se muestran como opciones de interfaz.
@@ -22,6 +24,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - README y guía de agentes describen el contrato KISS, los límites de exposición y las validaciones de mantenimiento.
 - El asistente inicial y Ajustes muestran los nombres humanos **Ollama Cloud** y **Ollama Local**; proveedor y modelo ya no se escriben como texto libre.
 - **Ollama Cloud** solicita únicamente la API key como campo manual y luego presenta el selector de modelo; **Ollama Local** pasa directamente al selector de modelo.
+- **Ajustes** conserva los cambios como borrador hasta **Guardar cambios**; al guardar reconstruye el cliente con la configuración confirmada y avisa `Ajustes guardados.`. **Esc** y **Cancelar** descartan el borrador.
 
 ### Fixed
 - Los fallos de conexión o ejecución se muestran como un mensaje humano con reintento, sin URLs, tokens, stack traces o detalles del provider en el chat.

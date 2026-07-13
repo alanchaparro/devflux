@@ -134,3 +134,83 @@ FileListWidget {
     margin: 1 4;
     border: solid $primary;
 }
+
+/* Settings is deliberately a full-screen ModalScreen, never a left-panel menu. */
+SettingsScreen {
+    width: 100%;
+    height: 100%;
+    background: $background;
+    align: center middle;
+}
+
+#settings-panel {
+    width: 100%;
+    height: 100%;
+    padding: 1 3;
+    background: $surface;
+}
+
+#settings-title {
+    height: 3;
+    color: $primary;
+    text-style: bold;
+    text-align: center;
+}
+
+#settings-help, #settings-provider-note {
+    height: auto;
+    color: $text-muted;
+    padding-bottom: 1;
+}
+
+#settings-selection-row {
+    height: 1fr;
+    min-height: 12;
+}
+
+#settings-provider-pane {
+    width: 1fr;
+    padding-right: 1;
+}
+
+#settings-model-pane {
+    width: 3fr;
+    padding-left: 1;
+}
+
+.settings-label {
+    height: 2;
+    color: $accent;
+}
+
+#settings-provider, #settings-model {
+    height: 1fr;
+    border: solid $primary;
+    background: $surface-darken-1;
+}
+
+#settings-credential-pane {
+    height: auto;
+    padding-top: 1;
+}
+
+#settings-api-key {
+    width: 100%;
+    border: solid $primary;
+}
+
+#settings-model-error {
+    color: $warning;
+    height: auto;
+    padding-top: 1;
+}
+
+#settings-actions {
+    height: 3;
+    align: right middle;
+    padding-top: 1;
+}
+
+#settings-actions Button {
+    margin-left: 1;
+}

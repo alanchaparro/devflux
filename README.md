@@ -20,7 +20,8 @@ En el primer inicio, el asistente muestra un selector navegable para elegir entr
 
 - Con **Ollama Cloud**, pegá la API key cuando se solicite; es el único dato que se escribe manualmente. Después elegí el modelo con el selector.
 - Con **Ollama Local**, elegí directamente el modelo con el selector; no se solicita API key.
-- En **Ajustes**, el proveedor actual aparece preseleccionado y tanto el proveedor como el modelo se modifican con el mismo selector navegable.
+- **Ajustes** abre un editor a pantalla completa: el proveedor y modelo actuales quedan preseleccionados en listas navegables y desplazables. Usá **Tab** para cambiar de sección, **↑/↓** para recorrer las listas y **Enter** para elegir.
+- En **Ajustes**, **Guardar cambios** aplica proveedor y modelo y confirma `Ajustes guardados.`; **Cancelar** o **Esc** cierra el editor sin cambiar la configuración. Para Cloud, el campo secreto solo sirve para reemplazar la API key: la existente nunca se revela.
 
 La API key se guarda de forma privada y DevFlux no la muestra en la interfaz.
 
