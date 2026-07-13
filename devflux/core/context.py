@@ -15,6 +15,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+EXCLUDED_PROJECT_DIRS = {
+    "__pycache__", "build", "dist", "node_modules", "venv", ".venv",
+}
+
+
+def is_sensitive_project_path(path: Path) -> bool:
+    """Return whether a project file is a dotenv file and must never reach an LLM.
+
+    Dotenv files commonly contain API keys, passwords, and service tokens. They
+    must be excluded both from the project inventory and from pipeline context.
+    """
+    name = path.name.lower()
+    return name == ".env" or name.startswith(".env.") or name.endswith(".env")
+
 
 def _devflux_dir(cwd: Path | None = None) -> Path:
     """Return the .devflux directory path inside the working directory."""
@@ -105,8 +119,11 @@ def _list_project_files(cwd: Path | None = None) -> list[tuple[str, int]]:
         if not fpath.is_file():
             continue
         rel = fpath.relative_to(base)
-        # Skip hidden files/dirs and __pycache__
-        if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+        # Skip hidden files/dirs, dotenv files, and __pycache__.
+        if (
+            any(part.startswith(".") or part in EXCLUDED_PROJECT_DIRS for part in rel.parts)
+            or is_sensitive_project_path(rel)
+        ):
             continue
         try:
             size = fpath.stat().st_size

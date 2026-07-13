@@ -12,6 +12,7 @@ import jinja2
 
 from .client import LLMClient, LLMResponse
 from .config import DevFluxConfig
+from .context import EXCLUDED_PROJECT_DIRS, is_sensitive_project_path
 
 # Lesson 16: Never run in the code's own directory
 DEVFLUX_SRC_DIR = Path(__file__).resolve().parent.parent  # devflux/ package root
@@ -27,16 +28,44 @@ _jinja_env = jinja2.Environment(
     lstrip_blocks=True,
 )
 
+ROLE_TEMPLATES = {
+    "analista": "dev/analista.j2", "arquitecto": "dev/arquitecto.j2",
+    "planificador": "dev/planificador.j2", "backend": "dev/backend.j2",
+    "frontend": "dev/frontend.j2", "qa": "dev/qa.j2",
+    "reviewer": "dev/reviewer.j2", "integrador": "dev/integrador.j2",
+    "bug-intake": "bugs/bug-intake.j2", "reproductor": "bugs/reproductor.j2",
+    "logs": "bugs/logs.j2", "diagnostico": "bugs/diagnostico.j2",
+    "fixer": "bugs/fixer.j2", "regression-guard": "bugs/regression-guard.j2",
+    "repo-inventory": "repo/inventory.j2", "repo-docs": "repo/docs.j2",
+}
+
+
+def template_for_role(role: str) -> str:
+    """Return the specialized prompt template for a pipeline role."""
+    try:
+        return ROLE_TEMPLATES[role]
+    except KeyError as exc:
+        raise ValueError(f"Rol desconocido: {role}") from exc
+
+
+def _safe_relative_path(filename: str) -> str | None:
+    """Normalize a generated path without allowing it to escape the workspace."""
+    normalized = filename.replace("\\", "/").strip().strip("`")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        return None
+    candidate = Path(normalized)
+    if not candidate.parts or candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    return candidate.as_posix()
+
 
 def render_prompt(template_name: str, **kwargs: Any) -> str:
     """Render a Jinja2 template from prompts/ dir."""
     try:
         tmpl = _jinja_env.get_template(template_name)
         return tmpl.render(**kwargs)
-    except jinja2.TemplateNotFound:
-        # Fallback: generic prompt if template missing
-        role = template_name.replace(".j2", "").split("/")[-1]
-        return f"Eres {role}. El usuario pide: {kwargs.get('user_input', '')}\n\nGenera el codigo completo necesario."
+    except jinja2.TemplateNotFound as exc:
+        raise RuntimeError(f"Plantilla no encontrada: {template_name}") from exc
 
 
 # --- Garbage filter (Lesson 13) ---
@@ -211,9 +240,7 @@ def _extract_filename_from_header(lines: list[str], block_start_idx: int) -> str
         # Pattern 1: "Archivo: name" / "File: name" / "Fichero: name" / "Filename: name"
         m = re.match(r"(?:#{0,3}\s*)?(?:Archivo|File|Fichero|Filename|Nombre)\s*:\s*(.+)", prev, re.IGNORECASE)
         if m:
-            fname = m.group(1).strip()
-            fname = fname.replace("\\", "/").split("/")[-1]
-            fname = fname.replace("`", "").strip()
+            fname = _safe_relative_path(m.group(1))
             if fname:
                 return fname
 
@@ -259,6 +286,8 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
     block_lines: list[str] = []
     block_lang = ""
     current_filename: str | None = None
+    reject_current_block = False
+    rejected_any_block = False
 
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -268,8 +297,16 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
             in_block = True
             block_lang = stripped[3:].strip().lower()
             block_lines = []
-            # Try to find filename from headers before this block
+            # Try to find filename from headers before this block.
             current_filename = _extract_filename_from_header(lines, i)
+            reject_current_block = current_filename is None and any(
+                re.match(
+                    r"(?:#{0,3}\s*)?(?:Archivo|File|Fichero|Filename|Nombre)\s*:",
+                    lines[j].strip(),
+                    re.IGNORECASE,
+                )
+                for j in range(max(i - 15, 0), i)
+            )
             continue
 
         # Detect end of code fence
@@ -281,6 +318,14 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
                 current_filename = None
                 block_lang = ""
                 block_lines = []
+                continue
+
+            if reject_current_block:
+                rejected_any_block = True
+                current_filename = None
+                block_lang = ""
+                block_lines = []
+                reject_current_block = False
                 continue
 
             # Determine filename
@@ -330,7 +375,7 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
     # BUG FIX: Fallback — if no code blocks found, save entire response as a file.
     # This handles roles like analista/arquitecto that produce markdown documents
     # without code fences.
-    if not files:
+    if not files and not rejected_any_block:
         ext = _guess_extension_from_content(content, role)
         # Generate a meaningful filename based on role
         role_to_fname = {
@@ -408,9 +453,12 @@ class PipelineRunner:
         for fpath in cwd_resolved.rglob("*"):
             if not fpath.is_file():
                 continue
-            # Skip hidden files, __pycache__, .git, etc.
+            # Skip hidden files, dotenv files, __pycache__, .git, etc.
             rel = fpath.relative_to(cwd_resolved)
-            if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+            if (
+                any(part.startswith(".") or part in EXCLUDED_PROJECT_DIRS for part in rel.parts)
+                or is_sensitive_project_path(rel)
+            ):
                 continue
             # Only load text files (skip binary)
             try:
@@ -445,7 +493,7 @@ class PipelineRunner:
 
             # Render prompt for this role
             prompt = render_prompt(
-                f"dev/{role}.j2",
+                template_for_role(role),
                 user_input=user_input,
                 previous_summary=self._summarize_context(context),
                 existing_files=dict(context["accumulated_files"]),
