@@ -18,3 +18,5 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ### Fixed
 - **Esc** ahora cancela correctamente la confirmación contextual pese al binding prioritario global de la TUI.
+- El **primer Enter** que envía una idea ahora solo abre la confirmación; ya no puede confirmar esa misma selección y arrancar `equipo-dev` automáticamente. El **segundo Enter** confirma la acción resaltada.
+- Cuando hay un proyecto existente y el texto pide continuar, seguir o retomar ese proyecto, se preselecciona **Modificar proyecto actual** y `is_running` permanece en `false` hasta la confirmación explícita.

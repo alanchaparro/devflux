@@ -4,7 +4,7 @@
 
 ## Propósito y flujo
 
-Después de que la persona usuaria envía texto, `DevFluxApp._handle_chat_submit()` clasifica la intención y abre el modo de confirmación. No debe iniciarse un pipeline ni una consulta directa hasta que se seleccione una opción.
+El primer **Enter** envía el texto a `DevFluxApp._handle_chat_submit()`, que clasifica la intención y abre el modo de confirmación. Ese mismo evento no puede confirmar la selección recién abierta: no debe iniciarse un pipeline ni una consulta directa hasta un segundo **Enter** (u otra confirmación explícita) sobre el menú.
 
 La función fuente de verdad para la lista y el valor inicial es `confirmation_for_intent()` en `devflux/tui/app.py`. Mantener las cinco acciones, sus etiquetas y el orden sincronizados con esta guía, README, CHANGELOG y pruebas.
 
@@ -24,20 +24,23 @@ La función fuente de verdad para la lista y el valor inicial es `confirmation_f
 
 Todas las opciones se muestran siempre. La selección inicial se resuelve en este orden:
 
-1. `IntentType.QUESTION` o `IntentType.CHAT` → `question`.
-2. Si la intención restante es código y `Orchestrator.is_bug_request(text)` es verdadera → `bugs`.
-3. Si el inventario seguro `load_context_files(Path.cwd())` contiene archivos → `modify`.
-4. En cualquier otro caso → `create`.
+1. `Orchestrator.is_bug_request(text)` → `bugs`.
+2. Si `load_context_files(Path.cwd())` contiene archivos y `is_project_continuation_request(text)` detecta «continuar», «continua», «seguir» o «retomar» junto con «proyecto» → `modify`, incluso si el clasificador devuelve `IntentType.CHAT`.
+3. `IntentType.QUESTION` o `IntentType.CHAT` sin petición explícita de continuación → `question`.
+4. Si el inventario seguro contiene archivos → `modify`.
+5. En cualquier otro caso → `create`.
 
 El inventario debe continuar excluyendo metadatos, cachés y secretos; `.git` o `.devflux` por sí solos no convierten un directorio vacío en un proyecto existente.
 
 ## Teclado y cancelación
 
-Durante `_confirm_mode`:
+Durante `_confirm_mode` (es decir, después del primer Enter):
 
 - **↑** y **↓** cambian `_confirm_selected` con recorrido circular y vuelven a dibujar el menú.
-- **Enter** ejecuta la opción resaltada. El binding prioritario `action_submit_input()` también delega a `_handle_confirm_select()` para que Enter funcione aunque el foco siga en el input.
+- El **segundo Enter** ejecuta la opción resaltada. El binding prioritario `action_submit_input()` delega a `_handle_confirm_select()` solo cuando `_confirm_mode` ya era verdadero al recibir el evento; `on_key()` no procesa Enter, evitando que el Enter de envío se reutilice como confirmación.
 - **Esc** llama a `_cancel_confirmation()`: sale de confirmación, no ejecuta trabajo y devuelve el foco al chat.
+
+Al abrir la confirmación, `_handle_chat_submit()` deja `is_running` sin cambios (`False` cuando no había trabajo en curso). `_handle_confirm_select()` es el único paso que lo pone en `True` para `create`, `modify`, `bugs` o `question`; `rewrite` y `Esc` no arrancan trabajo.
 
 ## Archivos y validación mínima
 
@@ -53,4 +56,4 @@ python3 -m compileall devflux
 uv build
 ```
 
-Además, verificar de forma headless que ↑/↓ cambia la opción, Enter ejecuta la resaltada y Esc cancela sin iniciar un pipeline. Documentar cualquier cambio de orden, atajo o prioridad de selección en `README.md` y `CHANGELOG.md`.
+Además, verificar de forma headless que ↑/↓ cambia la opción, el primer Enter abre la confirmación sin iniciar un pipeline, el segundo Enter ejecuta la resaltada y Esc cancela sin iniciar un pipeline. Cubrir el caso de «quiero continuar mi proyecto» con un `index.html` existente: debe preseleccionar `modify` y mantener `is_running == False` hasta el segundo Enter. Documentar cualquier cambio de orden, atajo o prioridad de selección en `README.md` y `CHANGELOG.md`.

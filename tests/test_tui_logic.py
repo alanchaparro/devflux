@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+
+from devflux.core.config import DevFluxConfig
 from devflux.core.orchestrator import IntentType, Orchestrator
 from devflux.tui.app import DevFluxApp, confirmation_for_intent
 
@@ -128,3 +131,41 @@ def test_modify_and_bug_actions_force_the_selected_pipeline() -> None:
     _bug_prompt, bug_teams, _complexity, bug_roles = calls.pop()
     assert bug_teams == ["bugs"]
     assert "bug-intake" in bug_roles
+
+
+@pytest.mark.asyncio
+async def test_first_enter_only_opens_modify_confirmation_and_second_confirms(
+    tmp_path, monkeypatch
+) -> None:
+    """A new submission must never consume its own confirmation Enter key."""
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    pipeline_calls: list[tuple[str, list[str], object, list[str]]] = []
+    app._run_pipeline = lambda prompt, teams, complexity, roles: pipeline_calls.append(  # type: ignore[method-assign]
+        (prompt, teams, complexity, roles)
+    )
+
+    async with app.run_test() as pilot:
+        app._orchestrator = SimpleNamespace(
+            classify_intent=lambda _text: IntentType.CHAT,
+            select_team=lambda _text, team: ([team], "simple"),
+            get_roles=lambda: ["analyst"],
+            preview=lambda: "equipo-dev",
+        )
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "quiero continuar mi proyecto"
+
+        await pilot.press("enter")
+
+        assert app._confirm_mode is True
+        assert app._confirm_options[app._confirm_selected][2] == "modify"
+        assert app.is_running is False
+        assert pipeline_calls == []
+
+        await pilot.press("enter")
+
+        assert app._confirm_mode is False
+        assert app.is_running is True
+        assert len(pipeline_calls) == 1

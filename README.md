@@ -20,10 +20,10 @@ En el primer inicio, un wizard guía la configuración del provider (Ollama loca
 
 ## Menú contextual de confirmación
 
-Al enviar un mensaje con **Enter**, DevFlux no inicia un pipeline de inmediato: presenta cinco acciones y resalta una selección contextual. Usá:
+El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** envía la idea y abre el menú de confirmación, sin iniciar un pipeline ni una consulta al LLM; el **segundo Enter** ejecuta la opción que esté resaltada. Usá:
 
 - **↑ / ↓** para mover la selección (la navegación vuelve del último elemento al primero).
-- **Enter** para ejecutar la opción resaltada.
+- **Enter** (una vez abierto el menú) para ejecutar la opción resaltada.
 - **Esc** para cancelar y volver al chat sin ejecutar nada.
 
 | Acción | Resultado |
@@ -38,12 +38,13 @@ Al enviar un mensaje con **Enter**, DevFlux no inicia un pipeline de inmediato: 
 
 La lista completa siempre está disponible; DevFlux solo preselecciona la opción más probable:
 
-1. Si la intención clasificada es una **pregunta** o conversación, preselecciona **Responder como pregunta**.
-2. En una petición de código que describe explícitamente un error o bug, preselecciona **Buscar/corregir bugs**.
-3. En una petición de código con archivos de proyecto visibles, preselecciona **Modificar proyecto actual**.
-4. En un directorio sin archivos de proyecto visibles, preselecciona **Crear proyecto nuevo**.
+1. En una petición de código que describe explícitamente un error o bug, preselecciona **Buscar/corregir bugs**.
+2. Si hay archivos de proyecto visibles y el texto pide explícitamente continuar, seguir o retomar un proyecto, preselecciona **Modificar proyecto actual**, incluso si el clasificador lo considera conversación.
+3. Si la intención clasificada es una **pregunta** o conversación que no pide continuar un proyecto, preselecciona **Responder como pregunta**.
+4. En una petición de código con archivos de proyecto visibles, preselecciona **Modificar proyecto actual**.
+5. En un directorio sin archivos de proyecto visibles, preselecciona **Crear proyecto nuevo**.
 
-La detección de proyecto existente usa el inventario de contexto de DevFlux, que excluye metadatos y archivos no confiables como `.git`, `.devflux`, cachés y secretos. La selección sigue siendo una confirmación: podés elegir cualquiera de las cinco acciones antes de que se haga una llamada al LLM o se ejecute un pipeline.
+La detección de proyecto existente usa el inventario de contexto de DevFlux, que excluye metadatos y archivos no confiables como `.git`, `.devflux`, cachés y secretos. La selección sigue siendo una confirmación: tras el primer Enter podés elegir cualquiera de las cinco acciones antes de que se haga una llamada al LLM o se ejecute un pipeline.
 
 ## Stack
 

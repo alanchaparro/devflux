@@ -104,11 +104,21 @@ THEMES = ["neon", "dracula", "monokai", "nord", "gruvbox", "tokyo-night"]
 SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
 
 
+def is_project_continuation_request(text: str) -> bool:
+    """Return whether the user explicitly wants to continue an existing project."""
+    normalized = text.casefold()
+    continuation_words = ("continuar", "continua", "seguir", "retomar")
+    return "proyecto" in normalized and any(
+        word in normalized for word in continuation_words
+    )
+
+
 def confirmation_for_intent(
     intent: IntentType,
     *,
     has_existing_project: bool = False,
     is_bug_request: bool = False,
+    is_continuation_request: bool = False,
 ) -> tuple[list[tuple[str, str, str]], int]:
     """Return every confirmation action and its context-sensitive default.
 
@@ -128,10 +138,12 @@ def confirmation_for_intent(
         ("5", "Reescribir mi idea", "rewrite"),
     ]
 
-    if intent in (IntentType.QUESTION, IntentType.CHAT):
-        return options, 3
     if is_bug_request:
         return options, 2
+    if has_existing_project and is_continuation_request:
+        return options, 1
+    if intent in (IntentType.QUESTION, IntentType.CHAT):
+        return options, 3
     if has_existing_project:
         return options, 1
     return options, 0
@@ -393,7 +405,8 @@ class DevFluxApp(App):
 
         Now we read the input value directly and dispatch it.
 
-        FEATURE 3: If in confirm mode, Enter is handled by on_key instead.
+        FEATURE 3: In confirmation mode, the priority Enter binding explicitly
+        selects the highlighted action.
         """
         # FEATURE 3: In confirm mode, Enter selects the highlighted option
         if self._confirm_mode:
@@ -442,7 +455,8 @@ class DevFluxApp(App):
         With priority=True binding, action_submit_input handles Enter first.
         But if focus changes or binding doesn't fire, this is the safety net.
 
-        FEATURE 3: If in confirm mode, Enter is handled by on_key instead.
+        FEATURE 3: In confirmation mode, the priority Enter binding explicitly
+        selects the highlighted action.
         """
         # FEATURE 3: Don't process Enter if in confirm mode
         if self._confirm_mode:
@@ -581,6 +595,7 @@ class DevFluxApp(App):
             intent,
             has_existing_project=has_existing_project,
             is_bug_request=Orchestrator.is_bug_request(text),
+            is_continuation_request=is_project_continuation_request(text),
         )
 
         # Show confirmation in pipeline log
@@ -1384,8 +1399,9 @@ class DevFluxApp(App):
     def on_key(self, event) -> None:  # type: ignore[override]
         """Handle key events at the App level.
 
-        When in confirm mode, ↑/↓/Enter navigate the confirmation options.
-        Otherwise, delegate to default behavior.
+        When in confirm mode, ↑/↓ navigate the confirmation options. Enter is
+        dispatched only by the priority ``action_submit_input`` binding so a
+        submission cannot also be interpreted as a confirmation.
         """
         from textual.events import Key
 
@@ -1402,10 +1418,6 @@ class DevFluxApp(App):
             elif key == "down":
                 self._confirm_selected = (self._confirm_selected + 1) % len(self._confirm_options)
                 self._show_confirmation()
-                event.prevent_default()
-                event.stop()
-            elif key == "enter":
-                self._handle_confirm_select()
                 event.prevent_default()
                 event.stop()
             elif key == "escape":
