@@ -25,6 +25,8 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 ### Fixed
 - Los fallos de conexión o ejecución se muestran como un mensaje humano con reintento, sin URLs, tokens, stack traces o detalles del provider en el chat.
+- El progreso ya no anuncia una actualización antes de recibir archivos reales: la secuencia visible es **Conectando con el modelo...**, los archivos concretos a actualizar, **Verificando cambios...** y **Listo.**
+- Tras un fallo recuperable, **Enter** reintenta una sola vez el último pedido y **Esc** lo cancela; una ejecución exitosa desarma el reintento para impedir repeticiones accidentales.
 - `PRD.md`, `architecture.md`, `plan.md`, `main.md`, Markdown, Mermaid, documentación y otros artefactos internos se filtran antes de escribir y antes de mostrar resultados.
 - Una ejecución que escribe archivos limpia el reintento pendiente, evitando que Enter vacío repita accidentalmente un cambio exitoso.
 - Las configuraciones previas con variantes de guiones Unicode se conservan al iniciar y se actualizan de forma segura, sin pedir de nuevo los datos de acceso.

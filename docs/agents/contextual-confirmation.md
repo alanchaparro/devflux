@@ -1,6 +1,6 @@
 # Guía para agentes: UX KISS, rutas y límites de exposición
 
-**Estado:** verificado contra `devflux/tui/app.py`, `devflux/core/orchestrator.py`, `devflux/core/runner.py` y `tests/test_user_experience.py` el 2026-07-13.
+**Estado:** verificado contra `devflux/tui/app.py`, `devflux/core/orchestrator.py`, `devflux/core/runner.py`, `tests/test_user_experience.py` y `tests/test_tui_logic.py` el 2026-07-13.
 
 ## Contrato visible para la persona usuaria
 
@@ -15,8 +15,11 @@ DevFlux es una conversación, no un selector de equipos. El menú solo ofrece **
 - Esc cancela la confirmación y conserva el chat para reformular el pedido.
 - Una pregunta se responde en el chat sin crear `PipelineRunner`.
 - Ctrl+D es el único acceso normal al panel de diagnóstico.
+- Al iniciar una ejecución, el único progreso inicial es `Conectando con el modelo...`. No anunciar escritura, actualización ni verificación hasta tener evidencia real de esos pasos.
+- Cuando una respuesta contiene archivos funcionales, mostrar `Preparando actualización...` y `Actualizando <archivos reales>...`; después de una escritura con archivos, mostrar una única vez `Verificando cambios...` y finalmente `Listo.`.
+- Ante un fallo recuperable, mostrar exactamente el error humano y en una línea separada `> [Enter] Reintentar    [Esc] Cancelar`. Enter relanza una sola vez el último pedido; Esc elimina ese pedido pendiente y devuelve el foco al input.
 
-No introducir en el chat términos internos: nombres de equipos/roles, complejidad, tokens, URL, reintentos automáticos, stack traces, PRD, arquitectura o planes. Los detalles de soporte se registran en diagnóstico; el mensaje de error visible debe seguir `DevFluxApp.human_model_error()` y ofrecer un reintento humano.
+No introducir en el chat términos internos: nombres de equipos/roles, complejidad, tokens, URL, reintentos automáticos, stack traces, PRD, arquitectura o planes. Los detalles de soporte se registran en diagnóstico; el mensaje de error visible debe seguir `DevFluxApp.human_model_error()` y ofrecer un reintento humano. La conversación no debe decir que se actualizan archivos antes de recibirlos ni incluir tiempos, tokens, URLs o errores técnicos al completar.
 
 ## Selector de modelo y proveedor
 
@@ -61,7 +64,7 @@ Si el router falla, vence el timeout o devuelve una salida inválida, no se mues
 
 No convertir esta decisión en una opción de UI ni mostrar roles o etapas al usuario. El prompt `dev/implementer.j2` debe pedir solo el mínimo de archivos funcionales necesario y no planes, documentación o diagnósticos.
 
-`_last_retry` se arma antes de ejecutar un cambio y permite Enter vacío solo tras un fallo recuperable. Toda ejecución que escribe archivos debe limpiarlo antes de completar, para que un Enter vacío posterior nunca repita un cambio exitoso.
+`_last_retry` se arma antes de ejecutar un cambio. `_retry_pending` es el único permiso para que Enter vacío lo relance y se activa exclusivamente tras un fallo recuperable. Al iniciar el reintento se desarma de inmediato, por lo que dos Enter seguidos no duplican la ejecución. Esc limpia ambos estados y enfoca el input. Toda ejecución que escribe archivos limpia ambos antes de completar, para que un Enter vacío posterior nunca repita un cambio exitoso.
 
 ## Archivos funcionales y panel derecho
 
@@ -89,4 +92,4 @@ python3 -m build
 git diff --check
 ```
 
-Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; desarme del reintento tras éxito; fast path; y filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar.
+Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; la secuencia de progreso sin anuncios falsos; un Enter de reintento sin duplicación; cancelación del reintento; desarme del reintento tras éxito; fast path; y filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar.

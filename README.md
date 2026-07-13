@@ -44,7 +44,8 @@ Entendí: actualizaré el proyecto actual según tu pedido: ...
 
 - **Enter** aplica el cambio confirmado.
 - **Esc** vuelve al chat para cambiar el pedido.
-- Si el modelo no está disponible, DevFlux explica el problema sin detalles técnicos y permite reintentar con **Enter**.
+- Al ejecutar un cambio, DevFlux muestra primero `Conectando con el modelo...`. Solo después de recibir archivos reales informa cuáles actualizará, luego muestra `Verificando cambios...` y termina con `Listo.`.
+- Si el modelo no está disponible, DevFlux explica el problema sin detalles técnicos y muestra `> [Enter] Reintentar    [Esc] Cancelar`. **Enter** relanza una sola vez el último pedido fallido; **Esc** lo descarta y devuelve el foco al chat. Al terminar correctamente, ese reintento queda desarmado.
 - **Ctrl+D** abre el panel de **Diagnóstico** para soporte. Ahí se consultan los detalles técnicos; el chat normal no muestra providers, modelos, URLs, tokens, roles internos, reintentos ni stack traces.
 
 Los cambios pequeños del proyecto actual usan una ruta rápida. DevFlux elige internamente el flujo proporcional; no expone roles, planificación ni arquitectura como decisiones de la persona usuaria.

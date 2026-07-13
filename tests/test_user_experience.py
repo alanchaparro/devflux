@@ -42,7 +42,7 @@ def test_only_functional_files_are_eligible_for_writing_or_display() -> None:
 
 def test_timeout_is_presented_as_human_retry_message() -> None:
     assert DevFluxApp.human_model_error(TimeoutError("http://model:11434 timed out")) == (
-        "No pude conectar con el modelo. Probá de nuevo en unos segundos. [Enter] Reintentar"
+        "No pude conectar con el modelo. Probá de nuevo en unos segundos."
     )
 
 
@@ -54,6 +54,92 @@ def test_successful_pipeline_disarms_empty_enter_retry() -> None:
     app._pipeline_done(1, 0.1, ["index.html"])
 
     assert app._last_retry is None
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_shows_only_human_retry_ui_before_any_file_progress() -> None:
+    """A failed first LLM call must not imply that files were touched."""
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    messages: list[str] = []
+
+    async with app.run_test():
+        app._log_chat = messages.append  # type: ignore[method-assign]
+        app._last_retry = ("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])
+        app._pipeline_failed(TimeoutError("http://model.internal timed out"))
+
+    assert messages == [
+        "No pude conectar con el modelo. Probá de nuevo en unos segundos.",
+        "> [Enter] Reintentar    [Esc] Cancelar",
+    ]
+    assert not any("Actualizando" in message for message in messages)
+    assert app._retry_pending is True
+    assert app.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_enter_on_retry_relaunches_the_same_request_once() -> None:
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    calls: list[tuple[object, ...]] = []
+
+    async with app.run_test() as pilot:
+        app._last_retry = ("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])
+        app._retry_pending = True
+        app._run_pipeline = lambda *args: calls.append(args)  # type: ignore[method-assign]
+
+        await pilot.press("enter")
+        await pilot.press("enter")
+
+    assert calls == [("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])]
+    assert app.is_running is True
+    assert app._retry_pending is False
+
+
+@pytest.mark.asyncio
+async def test_escape_cancels_retry_and_returns_focus_to_input_without_running() -> None:
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    calls: list[tuple[object, ...]] = []
+
+    async with app.run_test() as pilot:
+        app._last_retry = ("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])
+        app._retry_pending = True
+        app._run_pipeline = lambda *args: calls.append(args)  # type: ignore[method-assign]
+
+        await pilot.press("escape")
+
+        assert app.focused is app.query_one("#chat-input")
+
+    assert calls == []
+    assert app._last_retry is None
+    assert app._retry_pending is False
+
+
+@pytest.mark.asyncio
+async def test_successful_response_uses_human_progress_order_and_clears_retry() -> None:
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    messages: list[str] = []
+
+    async with app.run_test():
+        app._log_chat = messages.append  # type: ignore[method-assign]
+        app._last_retry = ("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])
+        app._retry_pending = True
+        app._start_pipeline("cambia el fondo", ["dev"], Complexity.SIMPLE, ["implementer"])
+        app._show_files_ready(["index.html", "style.css"])
+        app._announce_verification()
+        app._pipeline_done(2, 0.1, ["index.html", "style.css"])
+
+    assert messages == [
+        "[yellow]Conectando con el modelo...[/yellow]",
+        "[yellow]Preparando actualización...[/yellow]",
+        "[yellow]Actualizando index.html y style.css...[/yellow]",
+        "[yellow]Verificando cambios...[/yellow]",
+        "[bold green]Listo.[/bold green]",
+    ]
+    assert app._last_retry is None
+    assert app._retry_pending is False
 
 
 @pytest.mark.asyncio

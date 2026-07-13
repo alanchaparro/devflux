@@ -135,6 +135,9 @@ def test_modify_and_bug_actions_force_the_selected_pipeline() -> None:
     assert "modifica los archivos existentes" in modify_prompt
     assert "no crees archivos duplicados innecesarios" in modify_prompt
 
+    # The stub does not call _pipeline_done; emulate completion before a
+    # separate user request so the duplicate-run guard remains realistic.
+    app.is_running = False
     app._confirm_mode = True
     app._confirm_text = "El formulario no carga"
     app._confirm_options, app._confirm_selected = confirmation_for_intent(

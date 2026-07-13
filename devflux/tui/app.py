@@ -370,6 +370,9 @@ class DevFluxApp(App):
         self._router_error_mode: bool = False
         self._diagnostics_visible: bool = False
         self._last_retry: tuple[str, list[str], Complexity, list[str]] | None = None
+        self._retry_pending = False
+        self._files_progress_announced = False
+        self._verification_announced = False
         # A vague modification must receive a concrete follow-up before a team runs.
         self.pending_modify_clarification: bool = False
         self._pending_clarification_action: str | None = None
@@ -524,11 +527,9 @@ class DevFluxApp(App):
             return
         value = chat_input.value
         if not value.strip():
-            if self._last_retry and not self.is_running:
+            if self._retry_pending and self._last_retry and not self.is_running:
                 prompt, teams, complexity, roles = self._last_retry
-                self.is_running = True
-                self._log_chat("[yellow]Reintentando...[/yellow]")
-                self._run_pipeline(prompt, teams, complexity, roles)
+                self._start_pipeline(prompt, teams, complexity, roles)
             return
         # _handle_chat_submit clears input and logs the message itself
         self._handle_chat_submit(value)
@@ -811,6 +812,64 @@ class DevFluxApp(App):
         except Exception:
             pass
 
+    def _start_pipeline(
+        self,
+        prompt: str,
+        teams: list[str],
+        complexity: Complexity,
+        roles: list[str],
+    ) -> None:
+        """Start one request without claiming any file has been changed yet."""
+        if self.is_running:
+            return
+        self.is_running = True
+        self._retry_pending = False
+        self._files_progress_announced = False
+        self._verification_announced = False
+        self._pipeline_count += 1
+        self._log_chat("[yellow]Conectando con el modelo...[/yellow]")
+        self._run_pipeline(prompt, teams, complexity, roles)
+
+    def _show_files_ready(self, files: list[str]) -> None:
+        """Announce writes only after an LLM response yielded concrete files."""
+        if self._files_progress_announced or not files:
+            return
+        self._files_progress_announced = True
+        self._log_chat("[yellow]Preparando actualización...[/yellow]")
+        names = ", ".join(files[:-1]) + (" y " if len(files) > 1 else "") + files[-1]
+        self._log_chat(f"[yellow]Actualizando {names}...[/yellow]")
+
+    def _announce_verification(self) -> None:
+        """Keep the last human progress step singular and meaningful."""
+        if self._verification_announced:
+            return
+        self._verification_announced = True
+        self._log_chat("[yellow]Verificando cambios...[/yellow]")
+
+    def _pipeline_failed(self, exc: Exception) -> None:
+        """Expose a retry affordance while retaining technical detail in Ctrl+D only."""
+        self.is_running = False
+        self._retry_pending = self._last_retry is not None
+        self._log_pipeline(f"Pipeline: {exc}")
+        self._log_chat(self.human_model_error(exc))
+        if self._retry_pending:
+            self._log_chat("> [Enter] Reintentar    [Esc] Cancelar")
+        try:
+            self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
+
+    def _cancel_retry(self) -> None:
+        """Disarm a failed request; Escape must never cause a later implicit retry."""
+        self._retry_pending = False
+        self._last_retry = None
+        self.is_running = False
+        self._log_chat("[dim]Reintento cancelado.[/dim]")
+        try:
+            self.query_one("#chat-input", Input).focus()
+        except Exception:
+            pass
+
     @work(thread=True)
     def _run_pipeline(
         self,
@@ -850,8 +909,7 @@ class DevFluxApp(App):
             fresh_client = LLMClient(self._config, self._creds)  # type: ignore[arg-type]
         except Exception as exc:
             self.call_from_thread(self._log_pipeline, f"Cliente LLM: {exc}")
-            self.call_from_thread(self._log_chat, self.human_model_error(exc))
-            self.call_from_thread(self._pipeline_done, 0, 0.0, [])
+            self.call_from_thread(self._pipeline_failed, exc)
             return
 
         # Spinner animation (Lesson 8: ASCII only)
@@ -864,8 +922,8 @@ class DevFluxApp(App):
                 spinner = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
                 self._spinner_idx += 1
                 self.call_from_thread(self._log_pipeline, f"{spinner} {role} inició")
-                friendly = "Verificando que siga funcionando..." if role == "equipo-bugs" else "Actualizando los archivos necesarios..."
-                self.call_from_thread(self._log_chat, f"[yellow]{friendly}[/yellow]")
+                if role == "equipo-bugs":
+                    self.call_from_thread(self._announce_verification)
             elif status == "done":
                 tokens = data.get("tokens", 0) if data else 0
                 elapsed = data.get("elapsed", 0.0) if data else 0.0
@@ -884,8 +942,9 @@ class DevFluxApp(App):
                         self._log_pipeline,
                         f"[green]  [OK] {role} ({elapsed:.1f}s, {tokens} tokens, {len(files)} archivos)[/green]"
                     )
-                # Update code panel if files were generated
+                # A write can only be announced once the response includes real files.
                 if files:
+                    self.call_from_thread(self._show_files_ready, files)
                     self.call_from_thread(self._update_code_panel, files, file_contents, role, file_diffs)
             elif status == "garbage":
                 fname = data.get("file", "?") if data else "?"
@@ -930,11 +989,11 @@ class DevFluxApp(App):
         try:
             files = runner.run(roles, user_input, teams=teams, cwd=cwd)
         except Exception as exc:
-            # BUG 1 FIX: Log the actual error for debugging
+            # Preserve technical detail in the hidden diagnostics log; the chat
+            # receives only the actionable, human retry state.
             self.call_from_thread(self._log_pipeline, f"Pipeline: {exc}")
-            self.call_from_thread(self._log_chat, self.human_model_error(exc))
-            self.call_from_thread(self._pipeline_done, 0, 0.0, [])
-            # BUG 1 FIX: Close the fresh client on error
+            self.call_from_thread(self._pipeline_failed, exc)
+            # Close the fresh client on error
             try:
                 fresh_client.close()
             except Exception:
@@ -1001,32 +1060,9 @@ class DevFluxApp(App):
         )
         session.save()
 
-        # Final message
-        if _is_retry:
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold green]Pipeline completo (reintento exitoso)![/bold green]\n"
-                f"Archivos: {len(files)}\n"
-                f"Tokens: {runner.total_tokens}\n"
-                f"Tiempo: {elapsed:.1f}s\n"
-                f"Directorio: {cwd}"
-            )
-        else:
-            self.call_from_thread(
-                self._log_chat,
-                f"[bold green]Pipeline completo![/bold green]\n"
-                f"Archivos: {len(files)}\n"
-                f"Tokens: {runner.total_tokens}\n"
-                f"Tiempo: {elapsed:.1f}s\n"
-                f"Directorio: {cwd}"
-            )
-
-        if files:
-            files_list = ", ".join(files.keys())
-            self.call_from_thread(
-                self._log_chat,
-                f"[cyan]Archivos generados: {files_list}[/cyan]"
-            )
+        # Final message stays human-facing; token, timing and cwd information
+        # remain in Ctrl+D diagnostics instead of the conversation.
+        self.call_from_thread(self._log_pipeline, f"Archivos generados: {', '.join(files.keys())}")
 
         self.call_from_thread(self._pipeline_done, runner.total_tokens, elapsed, list(files.keys()))
 
@@ -1038,9 +1074,11 @@ class DevFluxApp(App):
         """
         self.is_running = False
         # A completed write must not leave an invisible retry armed: pressing
-        # Enter on an empty chat input is reserved for failed runs only.
+        # Enter on an empty chat input is reserved for an explicitly failed run.
         if files:
             self._last_retry = None
+            self._retry_pending = False
+            self._announce_verification()
         self._log_pipeline(f"Completado: {len(files)} archivos, {tokens} tokens, {elapsed:.1f}s")
         if files:
             self._log_chat("[bold green]Listo.[/bold green]")
@@ -1236,6 +1274,9 @@ class DevFluxApp(App):
         # Escape is a priority binding, so it arrives here before App.on_key.
         if self._confirm_mode:
             self._cancel_confirmation()
+            return
+        if self._retry_pending:
+            self._cancel_retry()
             return
         if self._config is None:
             self._wizard_step = "provider"
@@ -1605,10 +1646,7 @@ class DevFluxApp(App):
                 teams, complexity = self._orchestrator.select_team(text, team)
                 roles = self._orchestrator.get_roles()
             self._last_retry = (pipeline_text, teams, complexity, roles)
-            self._log_chat("[yellow]Preparando actualización...[/yellow]")
-            self.is_running = True
-            self._pipeline_count += 1
-            self._run_pipeline(pipeline_text, teams, complexity, roles)
+            self._start_pipeline(pipeline_text, teams, complexity, roles)
 
         elif action == "question":
             self.is_running = True
@@ -1673,7 +1711,7 @@ class DevFluxApp(App):
     @staticmethod
     def human_model_error(_exc: Exception) -> str:
         """Never leak endpoints, stack traces or provider details into chat."""
-        return "No pude conectar con el modelo. Probá de nuevo en unos segundos. [Enter] Reintentar"
+        return "No pude conectar con el modelo. Probá de nuevo en unos segundos."
 
     def action_toggle_diagnostics(self) -> None:
         """Reveal support details only after the explicit Ctrl+D shortcut."""
