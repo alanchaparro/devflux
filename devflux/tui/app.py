@@ -104,6 +104,21 @@ THEMES = ["neon", "dracula", "monokai", "nord", "gruvbox", "tokyo-night"]
 SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
 
 
+def confirmation_for_intent(intent: IntentType) -> tuple[list[tuple[str, str, str]], int]:
+    """Return user-facing confirmation choices with a safe intent-aware default."""
+    if intent in (IntentType.QUESTION, IntentType.CHAT):
+        return [
+            ("1", "Responder ahora", "question"),
+            ("2", "Convertir en tarea de codigo", "pipeline"),
+            ("3", "Reescribir mi mensaje", "rewrite"),
+        ], 0
+    return [
+        ("1", "Crear proyecto", "pipeline"),
+        ("2", "Responder como pregunta", "question"),
+        ("3", "Reescribir mi idea", "rewrite"),
+    ], 0
+
+
 class MenuWidget(Static):
     """Menu using Static + on_key (Lesson 4: NOT OptionList).
 
@@ -542,20 +557,8 @@ class DevFluxApp(App):
         self._confirm_mode = True
         self._confirm_text = text
         self._confirm_intent = intent
-        self._confirm_selected = 0
-
-        # Build confirm options based on intent
-        intent_label = {
-            IntentType.CODE: "CODE (generar codigo)",
-            IntentType.QUESTION: "QUESTION (pregunta)",
-            IntentType.CHAT: "CHAT (conversacion)",
-        }.get(intent, "CODE")
-
-        self._confirm_options = [
-            ("1", f"Generar codigo (pipeline)", "pipeline"),
-            ("2", f"Es una pregunta (responder directo)", "question"),
-            ("3", f"Reescribir mi idea", "rewrite"),
-        ]
+        # Use a safe default that matches the detected intent.
+        self._confirm_options, self._confirm_selected = confirmation_for_intent(intent)
 
         # Show confirmation in pipeline log
         self._show_confirmation()
