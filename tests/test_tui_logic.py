@@ -287,6 +287,53 @@ def test_conversational_router_parses_clarify_and_reports_llm_error_without_fall
     assert "router timed out" in (failed.error or "")
 
 
+def test_conversational_router_parses_deepseek_reasoning_and_markdown_json(tmp_path, monkeypatch) -> None:
+    """DeepSeek-compatible APIs can put the final JSON in reasoning_content."""
+    monkeypatch.chdir(tmp_path)
+
+    class DeepSeekClient:
+        def chat(self, _messages, **_kwargs):
+            return SimpleNamespace(
+                content="",
+                reasoning=(
+                    "Analizo el hilo activo y la solicitud.\n"
+                    "```json\n{\"route\": \"modify\"}\n```"
+                ),
+                raw={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning_content": (
+                                    "Analizo el hilo activo y la solicitud.\n"
+                                    "```json\n{\"route\": \"modify\"}\n```"
+                                ),
+                            }
+                        }
+                    ]
+                },
+                tokens=9,
+            )
+
+    result = Orchestrator(DeepSeekClient()).route_conversation(
+        [{"role": "user", "content": "Fondo de burbujas animadas"}],
+        "modify",
+        "index.html existe",
+        "Fondo de burbujas animadas",
+    )
+
+    assert result == RouterResult(route=ConversationRoute.MODIFY)
+    debug = (tmp_path / ".devflux" / "debug_classify.txt").read_text(encoding="utf-8")
+    assert "ROUTER RAW RESPONSE" in debug
+    assert "reasoning_content" in debug
+
+
+def test_conversational_router_parses_explicit_text_labels_without_keyword_fallback() -> None:
+    assert Orchestrator._parse_conversation_route("La etiqueta es **bug**.") is ConversationRoute.BUG
+    assert Orchestrator._parse_conversation_route("Ruta seleccionada: question") is ConversationRoute.QUESTION
+    assert Orchestrator._parse_conversation_route("El usuario mencionó BUG pero no hay etiqueta.") is None
+
+
 @pytest.mark.asyncio
 async def test_pending_modify_uses_conversational_router_and_does_not_repeat_clarification(
     tmp_path, monkeypatch
@@ -328,27 +375,75 @@ async def test_pending_modify_uses_conversational_router_and_does_not_repeat_cla
 
 
 @pytest.mark.asyncio
-async def test_router_error_offers_explicit_choices_without_clarification_loop(tmp_path, monkeypatch) -> None:
+async def test_router_failure_in_active_modify_thread_uses_modify_confirmation_without_user_error(tmp_path, monkeypatch) -> None:
     (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     app = DevFluxApp()
     app._config = DevFluxConfig()
+    app.active_thread = "modify"
     app._orchestrator = SimpleNamespace(
-        route_conversation=lambda *_args: RouterResult(error="router unavailable")
+        route_conversation=lambda *_args: RouterResult(error="invalid deepseek router format")
     )
     messages: list[str] = []
+    pipeline_calls: list[tuple[object, ...]] = []
+
     async with app.run_test() as pilot:
-        app._orchestrator = SimpleNamespace(
-            route_conversation=lambda *_args: RouterResult(error="router unavailable")
-        )
+        app._log_chat = messages.append  # type: ignore[method-assign]
+        app._log_pipeline = messages.append  # type: ignore[method-assign]
+        app._run_pipeline = lambda *args: pipeline_calls.append(args)  # type: ignore[method-assign]
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "Fondo de burbujas animadas que explotan si lo clickeo"
+        await pilot.press("enter")
+
+    assert app.pending_modify_clarification is False
+    assert app._confirm_mode is True
+    assert app._confirm_options[app._confirm_selected][2] == "modify"
+    assert pipeline_calls == []
+    assert not any("error del router" in message.lower() for message in messages)
+    assert not any("invalid deepseek router format" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_router_failure_without_active_thread_shows_normal_selector_without_technical_error(tmp_path, monkeypatch) -> None:
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    app._orchestrator = SimpleNamespace(route_conversation=lambda *_args: RouterResult(error="router unavailable"))
+    messages: list[str] = []
+
+    async with app.run_test() as pilot:
+        app._log_chat = messages.append  # type: ignore[method-assign]
         app._log_pipeline = messages.append  # type: ignore[method-assign]
         chat_input = app.query_one("#chat-input")
         chat_input.value = "quiero hacer modificaciones en mi proyecto"
         await pilot.press("enter")
 
+    assert app.active_thread == "none"
     assert app._confirm_mode is True
-    assert app.pending_modify_clarification is False
-    assert any("router" in message.lower() and "Modify" in message for message in messages)
+    assert app._confirm_options[app._confirm_selected][2] == "modify"
+    assert not any("router" in message.lower() for message in messages)
+
+
+def test_router_failure_uses_the_active_thread_semantic_fallback() -> None:
+    bug_app = DevFluxApp()
+    bug_app.active_thread = "bugs"
+    bug_app._show_confirmation = lambda: None  # type: ignore[method-assign]
+    bug_app._apply_conversation_route("la pantalla falla", RouterResult(error="bad router reply"))
+
+    assert bug_app._confirm_mode is True
+    assert bug_app._confirm_options[bug_app._confirm_selected][2] == "bugs"
+    assert bug_app.active_thread == "bugs"
+
+    question_app = DevFluxApp()
+    question_app.active_thread = "question"
+    answered: list[str] = []
+    question_app._answer_question = answered.append  # type: ignore[method-assign]
+    question_app._apply_conversation_route("¿cómo funciona esto?", RouterResult(error="bad router reply"))
+
+    assert answered == ["¿cómo funciona esto?"]
+    assert question_app.active_thread == "question"
+    assert question_app._confirm_mode is False
 
 
 @pytest.mark.asyncio

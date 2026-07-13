@@ -175,6 +175,11 @@ class Orchestrator:
     ) -> RouterResult:
         """Route a turn using the entire thread; never fall back to keywords."""
         if self._llm_client is None:
+            self._debug_log_classify(
+                latest_user_message,
+                "ROUTER ERROR: no hay cliente LLM configurado",
+                "ERROR",
+            )
             return RouterResult(error="No hay cliente LLM configurado para el router.")
 
         transcript = json.dumps(conversation, ensure_ascii=False)
@@ -198,29 +203,118 @@ class Orchestrator:
             self._debug_log_classify(latest_user_message, f"ROUTER ERROR: {exc}", "ERROR")
             return RouterResult(error=f"No se pudo decidir el hilo: {exc}")
 
-        raw = (response.content or "").strip()
-        route = self._parse_conversation_route(raw)
+        parts = self._router_response_parts(response)
+        raw_response = getattr(response, "raw", None)
+        self._debug_log_router(active_thread, conversation, raw_response, parts)
+        route = self._parse_conversation_route(parts)
         if route is None:
-            self._debug_log_classify(latest_user_message, f"ROUTER INVALID: {raw!r}", "ERROR")
-            return RouterResult(error="El router LLM devolvió una respuesta inválida. Reintentá o elegí Modify/Question.")
-        self._debug_log_classify(latest_user_message, f"ROUTER LLM: {raw}", route.value)
+            self._debug_log_classify(
+                latest_user_message,
+                f"ROUTER INVALID (parts={parts!r})",
+                "ERROR",
+            )
+            return RouterResult(error="El router LLM devolvió una respuesta inválida.")
+        self._debug_log_classify(latest_user_message, f"ROUTER LLM: {parts!r}", route.value)
         return RouterResult(route=route)
 
     @staticmethod
-    def _parse_conversation_route(raw: str) -> ConversationRoute | None:
-        """Accept strict JSON plus a bare route, without heuristic interpretation."""
-        candidate = raw.strip()
-        try:
-            decoded = json.loads(candidate)
-            if isinstance(decoded, dict):
-                candidate = str(decoded.get("route", ""))
-        except json.JSONDecodeError:
-            match = re.search(r"\b(MODIFY|BUG|QUESTION|CLARIFY)\b", candidate.upper())
-            candidate = match.group(1) if match else ""
-        try:
-            return ConversationRoute(candidate.strip().upper())
-        except ValueError:
+    def _router_response_parts(response: Any) -> list[str]:
+        """Collect every response field where OpenAI-compatible APIs place output.
+
+        DeepSeek-compatible servers may put the decision in ``reasoning_content``
+        while ``content`` is empty (or return both). Preserve both fields rather
+        than assuming a single OpenAI response shape.
+        """
+        values: list[Any] = [
+            getattr(response, "content", ""),
+            getattr(response, "reasoning", ""),
+        ]
+        raw = getattr(response, "raw", None)
+        if isinstance(raw, dict):
+            choices = raw.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                message = choices[0].get("message")
+                if isinstance(message, dict):
+                    values.extend((message.get("content", ""), message.get("reasoning_content", "")))
+        return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+    @staticmethod
+    def _parse_conversation_route(raw: str | list[str]) -> ConversationRoute | None:
+        """Parse real-world structured or textual router replies, never keywords.
+
+        Structured route objects are preferred.  The textual forms intentionally
+        only accept an explicit route label (for example ``Final: MODIFY``), not
+        a route word mentioned incidentally in prose or in the prompt.
+        """
+        candidates = [raw] if isinstance(raw, str) else raw
+        route_values = "|".join(route.value for route in ConversationRoute)
+
+        def from_json(value: str) -> ConversationRoute | None:
+            try:
+                decoded = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if not isinstance(decoded, dict):
+                return None
+            for key, item in decoded.items():
+                if str(key).casefold() == "route":
+                    try:
+                        return ConversationRoute(str(item).strip().upper())
+                    except ValueError:
+                        return None
             return None
+
+        for candidate in candidates:
+            candidate = candidate.strip()
+            route = from_json(candidate)
+            if route is not None:
+                return route
+            # JSON can be wrapped in a markdown fence or embedded after reasoning.
+            for json_object in re.findall(r"\{[^{}]*\}", candidate, flags=re.DOTALL):
+                route = from_json(json_object)
+                if route is not None:
+                    return route
+
+        explicit = re.compile(
+            rf"(?i)\b(?:ruta(?:\s+seleccionada)?|route|etiqueta|label|final|"
+            rf"respuesta(?:\s+final)?|clasificaci[oó]n)\b\s*"
+            rf"(?:es|:|=|-)\s*[`*\"']*({route_values})\b",
+        )
+        bare = re.compile(rf"(?i)^\s*[`*\"']*({route_values})[.!`*\"']*\s*$")
+        for candidate in candidates:
+            match = explicit.search(candidate)
+            if match is None:
+                match = bare.match(candidate)
+            if match is not None:
+                return ConversationRoute(match.group(1).upper())
+        return None
+
+    def _debug_log_router(
+        self,
+        active_thread: str,
+        conversation: list[dict[str, str]],
+        raw_response: Any,
+        parsed_parts: list[str],
+    ) -> None:
+        """Persist raw router data per turn for production-format diagnosis."""
+        try:
+            debug_dir = Path(".devflux")
+            debug_dir.mkdir(exist_ok=True)
+            debug_file = debug_dir / "debug_classify.txt"
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            record = {
+                "active_thread": active_thread,
+                "conversation": conversation,
+                "raw_response": raw_response,
+                "parsed_parts": parsed_parts,
+            }
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(
+                    f"[{ts}] ROUTER RAW RESPONSE: "
+                    f"{json.dumps(record, ensure_ascii=False, default=str)}\n"
+                )
+        except Exception:
+            pass  # Debug logging must never affect the interaction.
 
     def classify_intent(self, user_input: str) -> IntentType:
         """Classify the high-level intent of the user input using LLM.

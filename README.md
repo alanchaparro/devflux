@@ -36,12 +36,12 @@ El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** añade 
 
 ### Router conversacional y garantías anti-loop
 
-Cada envío llama a `Orchestrator.route_conversation()` con cuatro fuentes: todos los `conversation_turns` de la sesión, `active_thread` (`none`, `modify`, `bugs` o `question`), el resumen seguro de `.devflux/context.md` y el inventario de archivos, y el último mensaje. El router devuelve solo `MODIFY`, `BUG`, `QUESTION` o `CLARIFY` (JSON estricto o etiqueta simple), con `temperature=0`, hasta 32 tokens y espera máxima de 10 s.
+Cada envío llama a `Orchestrator.route_conversation()` con cuatro fuentes: todos los `conversation_turns` de la sesión, `active_thread` (`none`, `modify`, `bugs` o `question`), el resumen seguro de `.devflux/context.md` y el inventario de archivos, y el último mensaje. El router devuelve solo `MODIFY`, `BUG`, `QUESTION` o `CLARIFY`, con `temperature=0`, hasta 32 tokens y espera máxima de 10 s. Para compatibilidad con DeepSeek/OpenAI, el parser considera `content`, `reasoning` y los campos de la respuesta cruda —incluido `reasoning_content`—; acepta JSON, JSON dentro de bloques Markdown y etiquetas explícitas, sin inferir rutas por palabras aisladas.
 
 - **`MODIFY`** abre la confirmación de modificación si existe un proyecto, o de creación en un directorio vacío. Un detalle posterior concreto —por ejemplo, «que el fondo tenga burbujas animadas que al clicar cambien de color»— se reconoce como `MODIFY` dentro del hilo `modify`; no repite la aclaración.
 - **`BUG`** abre la confirmación de `equipo-bugs`; **`QUESTION`** responde directamente sin `PipelineRunner`.
 - **`CLARIFY`** se reserva para mensajes sin una modificación implementable ni una pregunta contestable, como «quiero continuar» sin detalles. Conserva el hilo `modify` o `bugs` y solicita precisión sin lanzar equipos.
-- Si el router no tiene cliente, vence el tiempo, falla o devuelve una salida inválida, DevFlux muestra alternativas explícitas **Modify** y **Question**. No reintenta el router, no entra en un loop de aclaración y no inicia automáticamente un pipeline.
+- Si el router no tiene cliente, vence el tiempo, falla o devuelve una salida inválida, DevFlux no muestra el error técnico. Con un hilo activo aplica el fallback semántico (`modify` → **Modificar proyecto actual**, `bugs` → **Buscar/corregir bugs**, `question` → respuesta directa); sin hilo activo abre el selector contextual normal. No reintenta el router, no repite la selección y no inicia un pipeline sin el Enter de confirmación.
 
 La selección sigue siendo una confirmación: salvo preguntas, ningún equipo se ejecuta hasta un Enter posterior sobre la opción resaltada. El inventario excluye `.git`, `.devflux`, cachés y secretos, por lo que esos metadatos no convierten un directorio vacío en proyecto existente.
 

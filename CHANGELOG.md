@@ -20,6 +20,7 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 - La opción de modificación añade instrucciones para reutilizar el proyecto y su contexto, evitando archivos duplicados innecesarios.
 
 ### Fixed
-- Un error, timeout, ausencia de cliente o salida inválida del router muestra alternativas explícitas **Modify**/**Question**, sin reintento automático, loop de aclaración ni ejecución de `PipelineRunner`.
+- Un error, timeout, ausencia de cliente o salida inválida del router ahora usa el hilo semántico activo: `modify` → **Modificar proyecto actual**, `bugs` → **Buscar/corregir bugs** y `question` → respuesta directa. No expone errores técnicos, no repite el selector y nunca inicia `PipelineRunner` sin el Enter de confirmación; sin hilo activo muestra el selector normal, también sin errores crudos.
+- El router es más tolerante con respuestas DeepSeek/OpenAI: extrae `content`, `reasoning` y datos crudos como `reasoning_content`; acepta JSON, JSON fenced y etiquetas explícitas. Cada respuesta del router queda disponible para diagnóstico en `.devflux/debug_classify.txt` sin afectar la interacción.
 - El **primer Enter** que envía una idea enruta el turno pero no puede confirmar la selección ni arrancar equipos automáticamente; el **segundo Enter** confirma la acción resaltada.
 - **Esc** ahora cancela correctamente la confirmación contextual pese al binding prioritario global de la TUI.

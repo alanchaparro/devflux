@@ -11,7 +11,7 @@
 3. `project_context`: resumen seguro de `.devflux/context.md` e inventario preparado por `load_context_for_prompt(Path.cwd())`.
 4. `latest_user_message`: el último texto enviado.
 
-Usa una única llamada LLM con `temperature=0`, `max_tokens=32` y `timeout=10`. La instrucción exige JSON `{"route":"MODIFY|BUG|QUESTION|CLARIFY"}`; el parser también acepta una etiqueta sola. No agregar heurísticas de palabras clave como fallback: la conversación, el hilo y el contexto deben decidir el enrutamiento.
+Usa una única llamada LLM con `temperature=0`, `max_tokens=32` y `timeout=10`. La instrucción exige JSON `{"route":"MODIFY|BUG|QUESTION|CLARIFY"}`. Para proveedores compatibles con DeepSeek/OpenAI, el parser reúne `content`, `reasoning` y campos de `raw` como `choices[0].message.reasoning_content`; acepta JSON directo, JSON dentro de bloques Markdown y etiquetas explícitas (por ejemplo, `Final: MODIFY`). No agregar heurísticas de palabras clave como fallback: una palabra de ruta mencionada incidentalmente en prosa no decide la conversación.
 
 `RouterResult` contiene una ruta válida (`ConversationRoute`) o un `error` recuperable. Las rutas son:
 
@@ -32,13 +32,13 @@ Usa una única llamada LLM con `temperature=0`, `max_tokens=32` y `timeout=10`. 
 
 ## Garantías de fallo y anti-loop
 
-Si no existe cliente LLM, vence el timeout, ocurre una excepción o la salida no es una ruta válida, `route_conversation()` devuelve `RouterResult(error=...)`. `_apply_conversation_route()` debe entonces:
+Si no existe cliente LLM, vence el timeout, ocurre una excepción o la salida no es una ruta válida, `route_conversation()` devuelve `RouterResult(error=...)`; el detalle técnico solo se registra para diagnóstico. `_apply_conversation_route()` debe entonces:
 
-1. Abrir el menú de confirmación con `modify` seleccionado.
-2. Informar explícitamente las alternativas **Modify** y **Question** en chat y log de pipeline.
-3. Marcar `_router_error_mode=True`.
+1. Si hay `active_thread`, aplicar el fallback semántico sin volver a clasificar: `modify` → `MODIFY`, `bugs` → `BUG`, `question` → `QUESTION`.
+2. Para `modify` o `bugs`, abrir **una** confirmación con la acción del hilo resaltada; para `question`, responder directamente sin `PipelineRunner`.
+3. Si el hilo es `none`, abrir el selector contextual normal. No mostrar el error técnico, habilitar `_router_error_mode` ni forzar al usuario a repetir la selección.
 
-Al confirmar después de ese error, no se debe volver a llamar al router ni convertir el fallo en otra aclaración automática. `Modify` pide el cambio concreto y conserva el hilo `modify`; `Question` responde directamente. Otras acciones vuelven a indicar esas alternativas. Esta secuencia evita tanto loops de aclaración como arranques automáticos de pipeline.
+La confirmación sigue siendo obligatoria para los efectos de `modify` y `bugs`: el primer Enter que envía el mensaje solo abre el menú, y el Enter posterior ejecuta la opción resaltada. Esta recuperación no reintenta el router, no entra en un loop de aclaración/selector y no lanza equipos automáticamente. `_debug_log_router()` guarda por turno la respuesta cruda y las partes analizadas en `.devflux/debug_classify.txt`; un fallo de ese log nunca afecta la interacción.
 
 ## Acciones de confirmación
 
@@ -65,4 +65,4 @@ python3 -m compileall -q devflux
 python3 -m build
 ```
 
-Además de la suite, mantener casos para: envío de conversación/contexto al router; el seguimiento concreto que no repite `CLARIFY`; error de router con alternativas explícitas sin loop ni pipeline; `QUESTION` dentro de un hilo `modify`; primer Enter sin pipeline; segundo Enter con acción explícita; y `Esc` sin trabajo.
+Además de la suite, mantener casos para: envío de conversación/contexto al router; respuestas DeepSeek en `reasoning`/`reasoning_content`, JSON fenced y etiquetas explícitas sin falsos positivos por palabras aisladas; el seguimiento concreto que no repite `CLARIFY`; fallback por hilo `modify`/`bugs`/`question` sin error técnico ni pipeline; fallo sin hilo que muestra el selector normal; primer Enter sin pipeline; segundo Enter con acción explícita; y `Esc` sin trabajo.

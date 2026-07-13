@@ -603,28 +603,43 @@ class DevFluxApp(App):
         """Apply a structured LLM route without reclassifying by keywords."""
         self._last_user_input = text
         if result.error:
-            self._router_error_mode = True
+            # The active thread is the semantic fallback: a malformed, timed-out
+            # or unavailable router must never force the user to classify again.
+            # route_conversation already recorded the technical warning/debug raw.
+            fallback_routes = {
+                "modify": ConversationRoute.MODIFY,
+                "bugs": ConversationRoute.BUG,
+                "question": ConversationRoute.QUESTION,
+            }
+            fallback_route = fallback_routes.get(self.active_thread)
+            self._router_error_mode = False
+            if fallback_route is not None:
+                result = RouterResult(route=fallback_route)
+            else:
+                # With no established thread, retain the ordinary selector but do
+                # not expose router internals or leave the UI in an error mode.
+                self._confirm_mode = True
+                self._confirm_text = text
+                self._confirm_intent = IntentType.CODE
+                self._confirm_options, self._confirm_selected = confirmation_for_intent(
+                    IntentType.CODE,
+                    has_existing_project=bool(load_context_files(Path.cwd())),
+                )
+                self._show_confirmation()
+                return
+
+        route = result.route
+        if route is None:
+            # RouterResult is intentionally recoverable. This guard keeps a bad
+            # custom client from producing a technical error in the TUI.
             self._confirm_mode = True
             self._confirm_text = text
             self._confirm_intent = IntentType.CODE
             self._confirm_options, self._confirm_selected = confirmation_for_intent(
                 IntentType.CODE, has_existing_project=bool(load_context_files(Path.cwd()))
             )
-            self._confirm_selected = next(
-                i for i, (_number, _description, action) in enumerate(self._confirm_options)
-                if action == "modify"
-            )
-            message = (
-                f"[bold red]Error del router:[/bold red] {result.error} "
-                "Elegí explícitamente [bold]Modify[/bold] para describir un cambio "
-                "o [bold]Question[/bold] para responder sin pipeline."
-            )
-            self._log_chat(message)
-            self._log_pipeline(message)
             self._show_confirmation()
             return
-
-        route = result.route
         if route is ConversationRoute.CLARIFY:
             action = "bugs" if self.active_thread == "bugs" else "modify"
             self.active_thread = "bugs" if action == "bugs" else "modify"
@@ -644,9 +659,14 @@ class DevFluxApp(App):
             return
 
         has_existing_project = bool(load_context_files(Path.cwd()))
-        action = "bugs" if route is ConversationRoute.BUG else (
-            "modify" if has_existing_project else "create"
-        )
+        if route is ConversationRoute.BUG:
+            action = "bugs"
+        elif self.active_thread == "modify":
+            # Once the user explicitly selected Modify, preserve that semantic
+            # thread even if project inventory is temporarily unavailable.
+            action = "modify"
+        else:
+            action = "modify" if has_existing_project else "create"
         self.active_thread = "bugs" if action == "bugs" else "modify"
         self._confirm_mode = True
         self._confirm_text = text
