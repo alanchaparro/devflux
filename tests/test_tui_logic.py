@@ -270,7 +270,7 @@ def test_conversational_router_sends_full_thread_and_project_context_to_llm() ->
     assert "quiero hacer modificaciones" in messages[1]["content"]
     assert "burbujas animadas" in messages[1]["content"]
     assert "index.html" in messages[1]["content"]
-    assert kwargs == {"temperature": 0, "max_tokens": 32, "timeout": 10}
+    assert kwargs == {"temperature": 0, "max_tokens": 128, "timeout": 10}
 
 
 def test_conversational_router_parses_clarify_and_reports_llm_error_without_fallback() -> None:
@@ -326,9 +326,9 @@ def test_conversational_router_parses_deepseek_reasoning_and_markdown_json(tmp_p
     )
 
     assert result == RouterResult(route=ConversationRoute.MODIFY)
-    debug = (tmp_path / ".devflux" / "debug_classify.txt").read_text(encoding="utf-8")
-    assert "ROUTER RAW RESPONSE" in debug
-    assert "reasoning_content" in debug
+    # Router diagnostics are runtime state, never a hidden artifact in the
+    # user's project workspace.
+    assert not (tmp_path / ".devflux").exists()
 
 
 def test_conversational_router_parses_explicit_text_labels_without_keyword_fallback() -> None:

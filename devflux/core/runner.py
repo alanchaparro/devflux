@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,9 +37,6 @@ _jinja_env = jinja2.Environment(
 )
 
 ROLE_TEMPLATES = {
-    # The fast path intentionally has one implementation turn and only returns
-    # the functional files required for the user's request.
-    "implementer": "dev/implementer.j2",
     "analista": "dev/analista.j2", "arquitecto": "dev/arquitecto.j2",
     "planificador": "dev/planificador.j2", "backend": "dev/backend.j2",
     "frontend": "dev/frontend.j2", "qa": "dev/qa.j2",
@@ -91,7 +91,7 @@ GARBAGE_FILES = {
 # Internal planning artifacts belong in diagnostics, never in a user's project.
 INTERNAL_ARTIFACT_NAMES = {
     "prd.md", "architecture.md", "plan.md", "main.md", "qa_report.md",
-    "review.md", "integration.md",
+    "review.md", "integration.md", "plan.yaml", "plan.yml", "output.html",
 }
 INTERNAL_ARTIFACT_SUFFIXES = {".mermaid", ".mmd"}
 
@@ -144,6 +144,19 @@ def is_garbage(filename: str, content: str) -> bool:
     return False
 
 
+def is_safe_replacement(existing: str | None, replacement: str) -> bool:
+    """Reject likely fragments before they can destroy a project file."""
+    stripped = replacement.strip()
+    if len(stripped) < 50:
+        return False
+    lines = replacement.splitlines()
+    if lines and sum(1 for line in lines if not line.strip()) / len(lines) > 0.5:
+        return False
+    if existing and len(existing.strip()) >= 50 and len(stripped) < len(existing.strip()) * 0.30:
+        return False
+    return True
+
+
 # --- Code extraction ---
 
 # BUG FIX: More robust code block regex — handles Windows line endings,
@@ -168,17 +181,17 @@ FILE_HEADER_PATTERNS = [
     re.compile(r"(?:^|\n)\s*#{1,3}\s+([^\n`#]+?)(?:\s*\{[^}]*\})?\s*\n", re.MULTILINE),
 ]
 
-# Debug directory for raw LLM responses
-DEBUG_DIR = Path.home() / ".devflux"
-DEBUG_LAST_RESPONSE = DEBUG_DIR / "debug_last_response.txt"
+# Debug files are runtime diagnostics, never generated project files.
+RUNS_DIR = Path.home() / ".devflux" / "runs"
 
 
-def _save_debug_response(role: str, content: str) -> None:
+def _save_debug_response(role: str, content: str, debug_dir: Path | None = None) -> None:
     """Save raw LLM response to debug file for diagnostics."""
     try:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        target_dir = debug_dir or (RUNS_DIR / f"extract-{uuid.uuid4().hex}")
+        target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(DEBUG_LAST_RESPONSE, "w", encoding="utf-8") as f:
+        with open(target_dir / "debug_last_response.txt", "w", encoding="utf-8") as f:
             f.write(f"=== DevFlux Debug: Last LLM Response ===\n")
             f.write(f"Role: {role}\n")
             f.write(f"Timestamp: {timestamp}\n")
@@ -292,14 +305,20 @@ def _extract_filename_from_header(lines: list[str], block_start_idx: int) -> str
     return None
 
 
-def extract_files(content: str, role: str = "") -> dict[str, str]:
+def extract_files(
+    content: str,
+    role: str = "",
+    debug_dir: Path | None = None,
+    *,
+    allow_fallback: bool = True,
+) -> dict[str, str]:
     """Extract code files from LLM output.
 
     BUG FIX: Completely rewritten for robustness.
     - Handles fenced code blocks with filename headers
     - Falls back to saving entire response as a file if no code blocks found
     - Auto-detects file type from content heuristics
-    - Saves debug output to ~/.devflux/debug_last_response.txt
+    - Saves debug output to ~/.devflux/runs/<run-id>/debug_last_response.txt
 
     Returns dict[filename -> content].
     """
@@ -308,8 +327,8 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
     if not content or not content.strip():
         return files
 
-    # Save debug response
-    _save_debug_response(role, content)
+    # Save debug response outside the project workspace.
+    _save_debug_response(role, content, debug_dir)
 
     lines = content.split("\n")
     in_block = False
@@ -405,7 +424,7 @@ def extract_files(content: str, role: str = "") -> dict[str, str]:
     # BUG FIX: Fallback — if no code blocks found, save entire response as a file.
     # This handles roles like analista/arquitecto that produce markdown documents
     # without code fences.
-    if not files and not rejected_any_block:
+    if allow_fallback and not files and not rejected_any_block:
         ext = _guess_extension_from_content(content, role)
         # Generate a meaningful filename based on role
         role_to_fname = {
@@ -442,6 +461,19 @@ class PipelineRunner:
         self.total_tokens: int = 0
         self.total_elapsed: float = 0.0
         self.files: dict[str, str] = {}
+        self.last_run_dir: Path | None = None
+
+    @staticmethod
+    def _checkpoint(run_dir: Path, *, run_id: str, roles: list[str], completed: list[str], status: str) -> None:
+        """Persist resumable internal state only under ~/.devflux/runs."""
+        state = {
+            "run_id": run_id,
+            "roles": roles,
+            "completed_roles": completed,
+            "status": status,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (run_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def run(
         self,
@@ -449,6 +481,7 @@ class PipelineRunner:
         user_input: str,
         teams: list[str] | None = None,
         cwd: Path | None = None,
+        run_id: str | None = None,
     ) -> dict[str, str]:
         """Run a list of roles sequentially.
 
@@ -474,6 +507,16 @@ class PipelineRunner:
                 "Negandose a ejecutar en el directorio del codigo fuente de DevFlux "
                 f"({DEVFLUX_SRC_DIR}). Use un directorio de trabajo diferente."
             )
+
+        # All model diagnostics and checkpoints stay in application state,
+        # outside the user workspace. Supplying run_id is the internal seam for
+        # a future resume UI without coupling state to the project directory.
+        run_id = run_id or f"run-{uuid.uuid4().hex}"
+        run_dir = RUNS_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.last_run_dir = run_dir
+        completed_roles: list[str] = []
+        self._checkpoint(run_dir, run_id=run_id, roles=roles, completed=completed_roles, status="running")
 
         # BUG 1 FIX: Load existing files from disk so the LLM knows what to modify.
         # This is critical for second runs where the user asks for modifications.
@@ -515,6 +558,7 @@ class PipelineRunner:
         context: dict[str, Any] = {
             "user_input": user_input,
             "previous_roles": [],
+            "role_outputs": {},
             "accumulated_files": dict(existing_on_disk),
             "files_before_run": files_before_run,
             "session_history": session_history,
@@ -529,6 +573,7 @@ class PipelineRunner:
                 user_input=user_input,
                 previous_summary=self._summarize_context(context),
                 existing_files=dict(context["accumulated_files"]),
+                role_outputs=dict(context["role_outputs"]),
                 session_history=context.get("session_history", ""),
             )
 
@@ -546,28 +591,41 @@ class PipelineRunner:
                 {"role": "user", "content": prompt},
             ]
 
-            # Call LLM with retry (Lesson: max 2 retries with backoff)
             response = self._call_with_retry(messages)
 
             self.total_tokens += response.tokens
             self.total_elapsed += response.elapsed
 
-            # DEBUG: Save raw LLM response for diagnostics
-            debug_dir = cwd_resolved / ".devflux"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            debug_file = debug_dir / f"debug_{role}_response.txt"
+            # Save raw LLM output in the isolated run directory. These captures
+            # are the diagnostic/recovery record; they never become project files.
+            debug_file = run_dir / f"{len(completed_roles) + 1:02d}-{role}.txt"
             try:
                 debug_file.write_text(response.content, encoding="utf-8")
+                # Compatibility name for diagnostics consumers; canonical role
+                # capture remains the numbered checkpoint above.
+                (run_dir / f"debug_{role}_response.txt").write_text(response.content, encoding="utf-8")
             except Exception:
                 pass
+            context["role_outputs"][role] = response.content
 
             # Extract files from response
-            new_files = extract_files(response.content, role=role)
+            new_files = extract_files(
+                response.content,
+                role=role,
+                debug_dir=run_dir,
+                # An incomplete integrator response is report text, never a
+                # valid source file. Preserve backend/frontend candidates and
+                # let the final write use them instead of inventing integration.py.
+                allow_fallback=role != "integrador",
+            )
 
-            # Apply garbage filter
+            # Planning, QA and review reports are checkpoints, not project
+            # artifacts. In an eight-role dev run only implementation roles may
+            # contribute candidate functional files; only the integrator writes.
+            may_propose_files = role in {"backend", "frontend", "integrador"} or "integrador" not in roles
             filtered: dict[str, str] = {}
             for fname, fcontent in new_files.items():
-                if is_functional_project_file(fname) and not is_garbage(fname, fcontent):
+                if may_propose_files and is_functional_project_file(fname) and not is_garbage(fname, fcontent):
                     filtered[fname] = fcontent
                 else:
                     self._callback(role, "garbage", {"file": fname})
@@ -599,16 +657,27 @@ class PipelineRunner:
             if file_diffs:
                 self._callback(role, "info", {"message": f"Diff: {len(file_diffs)} archivo(s) modificado(s): {', '.join(file_diffs.keys())}"})
 
-            # BUG 1 FIX: Write files to disk AFTER EACH ROLE (not just at the end).
-            # This ensures:
-            # 1. Files survive even if the pipeline crashes later
-            # 2. Subsequent roles can read them from disk
-            # 3. The TUI can show diffs against the actual disk content
-            for fname, fcontent in filtered.items():
-                fpath = cwd_resolved / fname
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                with open(fpath, "w", encoding="utf-8") as fh:
-                    fh.write(fcontent)
+            # The complete team keeps candidate code in memory until the final
+            # integrator. This prevents analyst/QA/review prose or partial code
+            # from contaminating a user project. Standalone legacy roles retain
+            # their previous immediate-write behavior.
+            if role == "integrador" or "integrador" not in roles:
+                files_to_write = context["accumulated_files"] if role == "integrador" else filtered
+                for fname, fcontent in files_to_write.items():
+                    if not is_functional_project_file(fname):
+                        continue
+                    fpath = cwd_resolved / fname
+                    old_content = None
+                    if fpath.exists():
+                        try:
+                            old_content = fpath.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                    if not is_safe_replacement(old_content, fcontent):
+                        self._callback(role, "garbage", {"file": fname, "reason": "unsafe replacement"})
+                        continue
+                    fpath.parent.mkdir(parents=True, exist_ok=True)
+                    fpath.write_text(fcontent, encoding="utf-8")
 
             # Callback with results
             # FEATURE 1: include file_diffs so the TUI can show red/green diff
@@ -620,20 +689,11 @@ class PipelineRunner:
                 "file_diffs": file_diffs,
                 "content_preview": response.content[:200],
             })
+            completed_roles.append(role)
+            self._checkpoint(run_dir, run_id=run_id, roles=roles, completed=completed_roles, status="running")
 
         self.files = context["accumulated_files"]
-
-        # FEATURE 2: Chain equipo-bugs integrity check after dev pipeline
-        if "dev" in teams and self.files:
-            self._callback("equipo-bugs", "start", None)
-            self._callback("equipo-bugs", "info", {"message": "Verificando integridad del proyecto..."})
-            integrity_issues = self._run_integrity_check(cwd_resolved)
-            if integrity_issues:
-                self._callback("equipo-bugs", "issues", {"issues": integrity_issues})
-            self._callback("equipo-bugs", "done", {
-                "message": "Integridad OK" if not integrity_issues else f"Integridad: {len(integrity_issues)} problemas",
-            })
-
+        self._checkpoint(run_dir, run_id=run_id, roles=roles, completed=completed_roles, status="completed")
         return self.files
 
     def _run_integrity_check(self, cwd: Path) -> list[dict[str, str]]:
@@ -742,7 +802,12 @@ class PipelineRunner:
 
         return issues
 
-    def _call_with_retry(self, messages: list[dict[str, str]], max_retries: int = 2) -> LLMResponse:
+    def _call_with_retry(
+        self,
+        messages: list[dict[str, str]],
+        max_retries: int = 2,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
         """Call LLM with up to 2 retries and backoff.
 
         BUG FIX: Surface errors to callback instead of silently returning empty.
@@ -750,7 +815,9 @@ class PipelineRunner:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                return self._client.chat(messages)
+                if max_tokens is None:
+                    return self._client.chat(messages)
+                return self._client.chat(messages, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_retries:
@@ -767,11 +834,16 @@ class PipelineRunner:
 
     @staticmethod
     def _summarize_context(context: dict[str, Any]) -> str:
-        """Build a summary of previous roles for the next role's prompt."""
-        lines: list[str] = []
-        for entry in context.get("previous_roles", []):
-            files_str = ", ".join(entry.get("files_extracted", [])) or "(sin archivos)"
-            lines.append(f"- {entry['role']}: {entry['tokens']} tokens, {entry['elapsed']:.1f}s, archivos: {files_str}")
-        if not lines:
+        """Pass bounded prior role deliverables to the next specialized role."""
+        outputs = context.get("role_outputs", {})
+        if not outputs:
             return "(sin roles previos)"
-        return "\n".join(lines)
+        chunks: list[str] = []
+        remaining = MAX_SESSION_HISTORY_CHARS
+        for role, output in outputs.items():
+            if remaining <= 0:
+                break
+            excerpt = str(output)[:remaining]
+            chunks.append(f"## Entrega interna: {role}\n{excerpt}")
+            remaining -= len(excerpt)
+        return "\n\n".join(chunks) or "(sin roles previos)"

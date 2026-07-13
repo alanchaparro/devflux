@@ -42,7 +42,7 @@ El estado persistido de instalaciones previas debe seguir funcionando aunque con
 3. `project_context`: contexto seguro preparado por `load_context_for_prompt(Path.cwd())`.
 4. `latest_user_message`: el texto recién enviado.
 
-Hace una llamada con `temperature=0`, `max_tokens=32` y `timeout=10`. Acepta `MODIFY`, `BUG`, `QUESTION` o `CLARIFY`, incluido JSON directo/fenced o etiqueta explícita y contenido de campos OpenAI/DeepSeek como `reasoning_content`. No añadir fallbacks por palabras aisladas: una ruta mencionada dentro de prosa no es una decisión.
+Hace una llamada con `temperature=0`, `max_tokens=128` y `timeout=10`. Acepta `MODIFY`, `BUG`, `QUESTION` o `CLARIFY`, incluido JSON directo/fenced o etiqueta explícita y contenido de campos OpenAI-compatibles como `reasoning_content` o `reasoning`. No añadir fallbacks por palabras aisladas: una ruta mencionada dentro de prosa no es una decisión.
 
 | Ruta | Resultado |
 | --- | --- |
@@ -55,23 +55,26 @@ Antes de llamar al router se actualiza `conversation_turns`. El hilo activo pers
 
 Si el router falla, vence el timeout o devuelve una salida inválida, no se muestra el error técnico ni se vuelve a llamar al router. Con un hilo activo se aplica el fallback semántico; sin hilo activo se prepara la confirmación normal. En todos los casos el efecto de escritura sigue requiriendo Enter explícito.
 
-## Ruta de implementación proporcional
+## Pipeline interno obligatorio para creaciones y modificaciones
 
 `Orchestrator.select_user_action(user_input, action)` decide el trabajo interno después de la confirmación:
 
-- Un `modify` sin señales de alcance amplio usa `teams=["dev"]`, `Complexity.SIMPLE` y el único rol `implementer`.
-- Pedidos amplios o explícitamente complejos conservan el flujo de desarrollo normal.
-- Los bugs usan el flujo de bugs.
+- Cada `create` o `modify`, sin excepción por tamaño, usa `teams=["dev"]` y la secuencia exacta `analista → arquitecto → planificador → backend → frontend → qa → reviewer → integrador`.
+- El mismo provider/modelo atiende los ocho pasos; el runner cambia el prompt y pasa las entregas internas entre roles secuenciales. La complejidad puede ajustar presupuestos, pero nunca acortar, sustituir o reordenar responsabilidades.
+- Las preguntas se responden por conversación y no seleccionan ni ejecutan roles. Los bugs explícitos usan equipo-bugs, no equipo-dev.
+- No reintroducir `implementer` como ruta productiva ni prometer una cantidad máxima de llamadas, incluso para HTML/CSS/JavaScript o `localStorage`.
 
-No convertir esta decisión en una opción de UI ni mostrar roles o etapas al usuario. El prompt `dev/implementer.j2` debe pedir solo el mínimo de archivos funcionales necesario y no planes, documentación o diagnósticos.
+No convertir esta decisión en una opción de UI ni mostrar roles o etapas al usuario. La UX KISS conserva la única confirmación humana y acepta conscientemente el mayor tiempo/costo del pipeline completo.
 
 `_last_retry` se arma antes de ejecutar un cambio. `_retry_pending` es el único permiso para que Enter vacío lo relance y se activa exclusivamente tras un fallo recuperable. Al iniciar el reintento se desarma de inmediato, por lo que dos Enter seguidos no duplican la ejecución. Esc limpia ambos estados y enfoca el input. Toda ejecución que escribe archivos limpia ambos antes de completar, para que un Enter vacío posterior nunca repita un cambio exitoso.
 
 ## Archivos funcionales y panel derecho
 
-`is_functional_project_file()` es la política única para resultados generados y UI. Un archivo debe ser una ruta relativa segura, no estar dentro de `docs`/`documentation`, no tener extensión `.md`, `.mermaid` o `.mmd`, y no llamarse `prd.md`, `architecture.md`, `plan.md`, `main.md`, `qa_report.md`, `review.md` o `integration.md`.
+`is_functional_project_file()` es la política única para resultados generados y UI. Un archivo debe ser una ruta relativa segura, no estar dentro de `docs`/`documentation`, no tener extensión `.md`, `.mermaid` o `.mmd`, y no llamarse `prd.md`, `architecture.md`, `plan.md`, `plan.yaml`, `plan.yml`, `main.md`, `qa_report.md`, `review.md`, `integration.md` u `output.html`.
 
-`PipelineRunner.run()` aplica esta política antes de escribir. `DevFluxApp._update_code_panel()` la aplica otra vez antes de mostrar archivos o diffs. Mantener ambas barreras: una salida de modelo no puede escribir ni enseñar documentación o artefactos internos.
+`PipelineRunner.run()` aplica esta política antes de escribir. `DevFluxApp._update_code_panel()` la aplica otra vez antes de mostrar archivos o diffs. Mantener ambas barreras: una salida de modelo no puede escribir ni enseñar documentación o artefactos internos. Sólo el integrador materializa los candidatos funcionales; los demás roles dejan entregas internas. Rechazar un reemplazo con menos de 50 caracteres, más de 50% de líneas vacías o menos de 30% del contenido existente cuando éste tiene tamaño suficiente.
+
+Las respuestas crudas, entregas de cada rol y el checkpoint `state.json` viven exclusivamente en `~/.devflux/runs/<run-id>/`; no crear `.devflux` ni PRD/arquitectura/plan/QA/review/debug dentro del proyecto ni exponer esas rutas en el chat.
 
 ## Zonas de cambio y validación
 
@@ -79,9 +82,9 @@ No convertir esta decisión en una opción de UI ni mostrar roles o etapas al us
 | --- | --- | --- |
 | Chat, confirmación, diagnóstico y reintento | `devflux/tui/app.py` | `tests/test_user_experience.py`, `tests/test_tui_logic.py` |
 | Selector inicial y modal fullscreen de Ajustes, más compatibilidad de configuración | `devflux/tui/app.py`, `devflux/tui/styles.tcss`, `devflux/core/config.py`, `devflux/core/credentials.py` | `tests/test_provider_wizard.py`, `tests/test_settings_modal.py` |
-| Rutas y fast path | `devflux/core/orchestrator.py` | `tests/test_user_experience.py` |
-| Filtrado y escritura | `devflux/core/runner.py` | `tests/test_user_experience.py`, pruebas de hardening |
-| Prompt de edición rápida | `devflux/prompts/dev/implementer.j2` | build de paquete |
+| Rutas y secuencia obligatoria de 8 roles | `devflux/core/orchestrator.py` | `tests/test_e2e_regressions.py`, `tests/test_eight_role_pipeline.py` |
+| Checkpoints, filtrado y escritura exclusiva del integrador | `devflux/core/runner.py` | `tests/test_e2e_regressions.py`, `tests/test_eight_role_pipeline.py`, pruebas de hardening |
+| Prompts especializados | `devflux/prompts/dev/{analista,arquitecto,planificador,backend,frontend,qa,reviewer,integrador}.j2` | `tests/test_eight_role_pipeline.py`, build de paquete |
 | Distribución de prompts | `pyproject.toml` | `python3 -m build` |
 
 Antes de entregar cambios en este flujo ejecutar:
@@ -93,4 +96,4 @@ python3 -m build
 git diff --check
 ```
 
-Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; la secuencia de progreso sin anuncios falsos; un Enter de reintento sin duplicación; cancelación del reintento; desarme del reintento tras éxito; fast path; filtrado de Markdown, Mermaid, PRD, arquitectura y planes al escribir y mostrar; y Ajustes fullscreen (preselección, catálogo largo navegable, cancelación sin persistencia, guardado y error de catálogo recuperable).
+Mantener pruebas para: una sola confirmación; Enter/Esc; preguntas sin pipeline; Ctrl+D; errores humanos sin detalles del provider; la secuencia de progreso sin anuncios falsos; un Enter de reintento sin duplicación; cancelación del reintento; desarme del reintento tras éxito; los ocho roles en orden para create/modify; `NO_BACKEND`/`NO_FRONTEND`; checkpoints sólo bajo `~/.devflux/runs`; escritura exclusiva del integrador con protección de 30%; filtrado de Markdown, Mermaid, PRD, arquitectura, planes, QA y review al escribir y mostrar; y Ajustes fullscreen (preselección, catálogo largo navegable, cancelación sin persistencia, guardado y error de catálogo recuperable).

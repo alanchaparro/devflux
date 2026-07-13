@@ -91,8 +91,11 @@ class LLMClient:
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
         content = msg.get("content", "")
-        # Lesson 15: reasoning_content fallback — merge into content if empty
-        reasoning = msg.get("reasoning_content", "")
+        # Providers differ on the name of their reasoning field. Ollama's
+        # current OpenAI-compatible response uses ``reasoning``; DeepSeek uses
+        # ``reasoning_content``. A routing decision may live exclusively in
+        # either field when content is empty, so retain both response shapes.
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
         if not content and reasoning:
             content = reasoning
 

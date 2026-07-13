@@ -31,7 +31,7 @@ Usuario ve su proyecto listo
 1. **TUI-first.** No existe CLI. Todo es interfaz visual con paneles, colores, y teclado.
 2. **Chat como entrada.** El usuario escribe en lenguaje natural, no comandos.
 3. **Orquestador inteligente.** Clasifica la intención, elige el equipo correcto, encadena automáticamente.
-4. **Pipeline visible.** El usuario ve qué está pasando: roles ejecutándose, código generándose en vivo.
+4. **UX simple; pipeline interno completo.** El usuario confirma un cambio en lenguaje claro; DevFlux ejecuta internamente los ocho roles sin exponer sus nombres, tiempos ni tokens.
 5. **Configuración mínima.** Solo provider (Ollama local o Ollama Cloud) + API key. Nada más.
 6. **Código visible.** Panel derecho muestra archivos generados con syntax highlighting y diffs.
 7. **Protección anti-errores.** No sobrescribir sin diff, no generar basura, validar outputs.
@@ -49,15 +49,15 @@ Usuario ve su proyecto listo
 │  │                       │  │                         ││
 │  │  "Quiero una web..."  │  │  index.html  [tab]      ││
 │  │                       │  │  style.css   [tab]      ││
-│  │  ▶ analista (12s)     │  │  script.js   [tab]      ││
-│  │  ▶ arquitecto (18s)   │  │                         ││
-│  │  ▶ frontend (25s)     │  │  <html>                 ││
-│  │  ✅ integrador (8s)   │  │  <head>...              ││
+│  │  Conectando con el    │  │  index.html  [tab]      ││
+│  │  modelo...            │  │  style.css   [tab]      ││
+│  │                       │  │  script.js   [tab]      ││
+│  │  Listo.               │  │  <html>                 ││
 │  │                       │  │                         ││
 │  │  📁 Tu proyecto está  │  │                         ││
 │  │     en ~/mi-web/      │  │                         ││
 │  └───────────────────────┘  └─────────────────────────┘│
-│  Modelo: deepseek-v4-pro | Tokens: 12,345 | 2m 15s    │
+│  Estado: listo                                           │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -65,7 +65,7 @@ Usuario ve su proyecto listo
 
 ## 4. Equipos de Agentes
 
-### 4.1 equipo-dev (8 roles) — Crear proyectos desde cero
+### 4.1 equipo-dev (8 roles) — Crear y modificar proyectos
 
 ```
 Analista → Arquitecto → Planificador → Backend → Frontend → QA → Reviewer → Integrador
@@ -81,6 +81,8 @@ Analista → Arquitecto → Planificador → Backend → Frontend → QA → Rev
 | QA | Intenta romper el sistema | Reporte de bugs críticos, warnings, verificación PRD |
 | Reviewer | Revisa calidad | Hallazgos críticos/medios/menores |
 | Integrador | Une todo y verifica | Cambios aplicados, estado final |
+
+Para cada creación o modificación, esta secuencia es obligatoria y usa un único provider/modelo con prompts especializados en cada paso. Los entregables de análisis, arquitectura, plan, QA y review son internos: se guardan como checkpoints en `~/.devflux/runs/<run-id>/` y nunca se crean en el proyecto. Sólo el integrador puede materializar archivos funcionales candidatos, con protección contra reemplazos destructivos (mínimo 30% del contenido existente).
 
 ### 4.2 equipo-bugs (9 roles) — Corregir errores
 
@@ -193,7 +195,7 @@ El orquestador no pasa todo el repo a cada agente. Prepara paquetes de contexto 
 1. Abre `devflux` → TUI pantalla completa
 2. Escribe: "Quiero una web de recetas de cocina con buscador"
 3. Presiona Enter
-4. Ve el pipeline ejecutándose en vivo (roles, tiempos, tokens)
+4. Confirma una vez y recibe progreso humano sin roles, tiempos ni tokens internos
 5. Ve el código generándose en el panel derecho
 6. Al terminar: resumen + "Tu proyecto está en ~/recetas/"
 7. Puede pedir modificaciones, abrir en navegador, o salir

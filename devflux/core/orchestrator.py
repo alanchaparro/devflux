@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -30,6 +31,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .client import LLMClient
+
+
+# Runtime diagnostics are application state, never project files. Tests may
+# redirect this constant to an isolated directory.
+RUNS_DIR = Path.home() / ".devflux" / "runs"
 
 
 class Complexity(Enum):
@@ -63,11 +69,15 @@ class RouterResult:
     error: str | None = None
 
 
-# Lesson 12: roles per complexity level
+# Product invariant: every feature or modification follows the complete
+# internal equipo-dev sequence. Complexity can tune model budgets, never skip a
+# responsibility or replace the team with a single implementer.
+DEV_EIGHT_ROLE_SEQUENCE = [
+    "analista", "arquitecto", "planificador", "backend",
+    "frontend", "qa", "reviewer", "integrador",
+]
 COMPLEXITY_ROLES: dict[Complexity, list[str]] = {
-    Complexity.SIMPLE: ["analista", "arquitecto", "frontend"],
-    Complexity.MEDIUM: ["analista", "arquitecto", "planificador", "backend", "frontend", "reviewer"],
-    Complexity.COMPLEX: ["analista", "arquitecto", "planificador", "backend", "frontend", "qa", "reviewer", "integrador"],
+    complexity: list(DEV_EIGHT_ROLE_SEQUENCE) for complexity in Complexity
 }
 
 # Lesson 12: token budget per complexity
@@ -160,22 +170,17 @@ class Orchestrator:
         return any(keyword in text for keyword in BUG_KEYWORDS)
 
     def select_user_action(self, user_input: str, action: str) -> tuple[list[str], Complexity, list[str]]:
-        """Choose an invisible, proportional implementation path.
+        """Choose the internal team without exposing implementation choices.
 
-        Everyday visual edits get one implementer and the normal integrity
-        check.  The expanded workflow remains available for genuinely broad or
-        explicitly complex work, but is never exposed as a UI choice.
+        A create/modify request always uses the faithful eight-role equipo-dev
+        chain. Explicit bugs retain their separate equipo-bugs route.
         """
-        text = user_input.casefold()
-        complex_signals = (
-            "arquitectura", "base de datos", "database", "autentic", "login",
-            "api ", "microserv", "migr", "varias pantallas", "sistema completo",
-        )
-        is_fast = action == "modify" and not any(signal in text for signal in complex_signals)
-        if is_fast:
+        if action in {"create", "modify"}:
             self.teams = ["dev"]
-            self.complexity = Complexity.SIMPLE
-            self._roles = ["implementer"]
+            # Keep a proportional token budget, but never shorten the role chain.
+            _teams, self.complexity = self.classify(user_input)
+            self.teams = ["dev"]
+            self._roles = list(DEV_EIGHT_ROLE_SEQUENCE)
             return self.teams, self.complexity, list(self._roles)
 
         team = "bugs" if action == "bugs" else "dev"
@@ -219,7 +224,11 @@ class Orchestrator:
                     {"role": "user", "content": context},
                 ],
                 temperature=0,
-                max_tokens=32,
+                # Reasoning-capable providers can spend the first tokens on
+                # hidden analysis; 32 truncated the observed real response
+                # before its required JSON decision. Keep this bounded while
+                # leaving room for the final route.
+                max_tokens=128,
                 timeout=10,
             )
         except Exception as exc:
@@ -258,7 +267,11 @@ class Orchestrator:
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                 message = choices[0].get("message")
                 if isinstance(message, dict):
-                    values.extend((message.get("content", ""), message.get("reasoning_content", "")))
+                    values.extend((
+                        message.get("content", ""),
+                        message.get("reasoning_content", ""),
+                        message.get("reasoning", ""),
+                    ))
         return [value.strip() for value in values if isinstance(value, str) and value.strip()]
 
     @staticmethod
@@ -319,10 +332,10 @@ class Orchestrator:
         raw_response: Any,
         parsed_parts: list[str],
     ) -> None:
-        """Persist raw router data per turn for production-format diagnosis."""
+        """Persist raw router data outside the user project for diagnosis."""
         try:
-            debug_dir = Path(".devflux")
-            debug_dir.mkdir(exist_ok=True)
+            debug_dir = RUNS_DIR / f"router-{uuid.uuid4().hex}"
+            debug_dir.mkdir(parents=True, exist_ok=True)
             debug_file = debug_dir / "debug_classify.txt"
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             record = {
@@ -400,10 +413,10 @@ class Orchestrator:
     def _debug_log_classify(
         self, user_input: str, detail: str, result: str
     ) -> None:
-        """Write classification debug info to .devflux/debug_classify.txt."""
+        """Write classification diagnostics outside the user project."""
         try:
-            debug_dir = Path(".devflux")
-            debug_dir.mkdir(exist_ok=True)
+            debug_dir = RUNS_DIR / f"classify-{uuid.uuid4().hex}"
+            debug_dir.mkdir(parents=True, exist_ok=True)
             debug_file = debug_dir / "debug_classify.txt"
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             line = (

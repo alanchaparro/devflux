@@ -49,11 +49,13 @@ Entendí: actualizaré el proyecto actual según tu pedido: ...
 - Si el modelo no está disponible, DevFlux explica el problema sin detalles técnicos y muestra `> [Enter] Reintentar    [Esc] Cancelar`. **Enter** relanza una sola vez el último pedido fallido; **Esc** lo descarta y devuelve el foco al chat. Al terminar correctamente, ese reintento queda desarmado.
 - **Ctrl+D** abre el panel de **Diagnóstico** para soporte. Ahí se consultan los detalles técnicos; el chat normal no muestra providers, modelos, URLs, tokens, roles internos, reintentos ni stack traces.
 
-Los cambios pequeños del proyecto actual usan una ruta rápida. DevFlux elige internamente el flujo proporcional; no expone roles, planificación ni arquitectura como decisiones de la persona usuaria.
+Cada creación o modificación confirmada recorre internamente el equipo-dev completo, en este orden: **analista → arquitecto → planificador → backend → frontend → QA → reviewer → integrador**. DevFlux usa un único proveedor/modelo y cambia el prompt en cada etapa. Es una garantía deliberada de calidad, aunque implica más tiempo y costo que una implementación directa; la interfaz sigue siendo simple y no expone roles, planificación ni arquitectura como decisiones de la persona usuaria. Los pedidos que son preguntas se responden en el chat sin ejecutar roles, y los bugs explícitos usan equipo-bugs.
 
 ## Archivos y panel derecho
 
-El panel derecho muestra los archivos funcionales creados o modificados y sus diferencias. DevFlux filtra documentos e insumos internos como `PRD.md`, `architecture.md`, `plan.md`, `main.md`, Markdown y diagramas Mermaid: no los escribe ni los muestra como resultado del pedido.
+El panel derecho muestra los archivos funcionales creados o modificados y sus diferencias. DevFlux filtra documentos e insumos internos como `PRD.md`, `architecture.md`, `plan.md`, `plan.yaml`, `plan.yml`, `main.md`, `output.html`, Markdown y diagramas Mermaid: no los escribe ni los muestra como resultado del pedido.
+
+Los diagnósticos, respuestas crudas y checkpoints por rol (`state.json`) no se guardan dentro del proyecto: se aíslan en `~/.devflux/runs/<run-id>/`. El chat normal no expone esos detalles internos.
 
 ## Desarrollo y validación
 
@@ -80,8 +82,8 @@ devflux/
 │   ├── config.py        # DevFluxConfig
 │   ├── client.py        # Cliente LLM compatible con OpenAI
 │   ├── context.py       # Inventario y contexto seguro del proyecto
-│   ├── orchestrator.py  # Enrutamiento conversacional y ruta proporcional
-│   ├── runner.py        # Escritura segura de archivos funcionales
+│   ├── orchestrator.py  # Enrutamiento conversacional y equipo-dev de 8 roles
+│   ├── runner.py        # Checkpoints aislados y escritura segura del integrador
 │   └── sessions.py      # Registro de sesiones
 ├── tui/
 │   ├── app.py           # Chat, confirmación y diagnóstico
