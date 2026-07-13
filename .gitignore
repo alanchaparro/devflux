@@ -22,6 +22,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Env
+# Env and local DevFlux state
 .env
 .env.local
+*.env
+.devflux/

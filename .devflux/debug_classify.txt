@@ -1,2 +1,0 @@
-[2026-07-11 11:24:03] INPUT: 'test input' | DETAIL: test detail | RESULT: QUESTION
-[2026-07-11 11:24:03] INPUT: 'some input' | DETAIL: NO_LLM_CLIENT | RESULT: CODE (no client)
