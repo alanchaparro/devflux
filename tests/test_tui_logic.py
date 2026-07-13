@@ -4,9 +4,10 @@ import pytest
 
 from devflux.core.config import DevFluxConfig
 from devflux.core.orchestrator import (
+    ConversationRoute,
     IntentType,
-    ModificationRequest,
     Orchestrator,
+    RouterResult,
 )
 from devflux.tui.app import DevFluxApp, confirmation_for_intent
 
@@ -53,33 +54,12 @@ def test_orchestrator_detects_bug_requests_for_confirmation() -> None:
     assert not Orchestrator.is_bug_request("Agrega un boton de contacto")
 
 
-def test_modification_gate_uses_llm_with_project_context_and_safe_fallback() -> None:
-    calls: list[tuple[object, object]] = []
-
-    class Client:
-        def chat(self, messages, **kwargs):
-            calls.append((messages, kwargs))
-            return SimpleNamespace(content="ACTIONABLE_CHANGE", tokens=1)
-
-    orchestrator = Orchestrator(Client())
-    result = orchestrator.classify_modification_request(
-        "Agrega burbujas animadas al fondo", "Contexto: index.html existe"
-    )
-
-    assert result is ModificationRequest.ACTIONABLE_CHANGE
-    messages, kwargs = calls[0]
-    assert "Contexto: index.html existe" in messages[0]["content"]
-    assert kwargs == {"temperature": 0, "max_tokens": 4, "timeout": 5}
-    assert Orchestrator().classify_modification_request(
-        "quiero continuar mi proyecto", "index.html"
-    ) is ModificationRequest.NEEDS_CLARIFICATION
-
-
-
 def test_chat_submission_defaults_to_create_in_empty_directory(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     app = DevFluxApp()
-    app._orchestrator = SimpleNamespace(classify_intent=lambda _text: IntentType.CODE)
+    app._orchestrator = SimpleNamespace(
+        route_conversation=lambda *_args: RouterResult(route=ConversationRoute.MODIFY)
+    )
     app.query_one = lambda *_args: SimpleNamespace(value="")  # type: ignore[method-assign]
     app._log_chat = lambda _message: None  # type: ignore[method-assign]
     app._show_confirmation = lambda: None  # type: ignore[method-assign]
@@ -93,7 +73,9 @@ def test_chat_submission_defaults_to_modify_with_existing_file(tmp_path, monkeyp
     (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     app = DevFluxApp()
-    app._orchestrator = SimpleNamespace(classify_intent=lambda _text: IntentType.CODE)
+    app._orchestrator = SimpleNamespace(
+        route_conversation=lambda *_args: RouterResult(route=ConversationRoute.MODIFY)
+    )
     app.query_one = lambda *_args: SimpleNamespace(value="")  # type: ignore[method-assign]
     app._log_chat = lambda _message: None  # type: ignore[method-assign]
     app._show_confirmation = lambda: None  # type: ignore[method-assign]
@@ -130,7 +112,6 @@ def test_escape_binding_cancels_confirmation() -> None:
 def test_modify_and_bug_actions_force_the_selected_pipeline() -> None:
     app = DevFluxApp()
     app._orchestrator = SimpleNamespace(
-        classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
         select_team=lambda _text, team: ([team], "simple"),
         get_roles=lambda: ["bug-intake"],
         preview=lambda: "equipo-dev",
@@ -184,21 +165,13 @@ async def test_vague_modify_request_asks_for_clarification_without_running_pipel
 
     async with app.run_test() as pilot:
         app._orchestrator = SimpleNamespace(
-            classify_intent=lambda _text: IntentType.CHAT,
-            classify_modification_request=lambda _text, _context: ModificationRequest.NEEDS_CLARIFICATION,
+            route_conversation=lambda *_args: RouterResult(route=ConversationRoute.CLARIFY),
             select_team=lambda _text, team: ([team], "simple"),
             get_roles=lambda: ["analyst"],
             preview=lambda: "equipo-dev",
         )
         chat_input = app.query_one("#chat-input")
         chat_input.value = "quiero continuar mi proyecto"
-
-        await pilot.press("enter")
-
-        assert app._confirm_mode is True
-        assert app._confirm_options[app._confirm_selected][2] == "modify"
-        assert app.is_running is False
-        assert pipeline_calls == []
 
         await pilot.press("enter")
 
@@ -226,8 +199,7 @@ async def test_clarification_follow_up_offers_modify_and_waits_for_confirmation(
 
     async with app.run_test() as pilot:
         app._orchestrator = SimpleNamespace(
-            classify_intent=lambda _text: IntentType.CODE,
-            classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
+            route_conversation=lambda *_args: RouterResult(route=ConversationRoute.MODIFY),
             select_team=lambda _text, team: ([team], "simple"),
             get_roles=lambda: ["analyst"],
             preview=lambda: "equipo-dev",
@@ -253,7 +225,6 @@ async def test_clarification_follow_up_offers_modify_and_waits_for_confirmation(
 def test_modify_action_runs_when_llm_marks_request_actionable() -> None:
     app = DevFluxApp()
     app._orchestrator = SimpleNamespace(
-        classify_modification_request=lambda _text, _context: ModificationRequest.ACTIONABLE_CHANGE,
         select_team=lambda _text, team: ([team], "simple"),
         get_roles=lambda: ["analyst"],
         preview=lambda: "equipo-dev",
@@ -271,3 +242,133 @@ def test_modify_action_runs_when_llm_marks_request_actionable() -> None:
     app._handle_confirm_select()
 
     assert len(calls) == 1
+
+
+def test_conversational_router_sends_full_thread_and_project_context_to_llm() -> None:
+    calls: list[tuple[object, object]] = []
+
+    class Client:
+        def chat(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return SimpleNamespace(content='{"route": "MODIFY"}', tokens=1)
+
+    result = Orchestrator(Client()).route_conversation(
+        conversation=[
+            {"role": "user", "content": "quiero hacer modificaciones en mi proyecto"},
+            {"role": "user", "content": "que el fondo tenga burbujas animadas"},
+        ],
+        active_thread="modify",
+        project_context="Resumen: sitio HTML; archivos: index.html, styles.css",
+        latest_user_message="que el fondo tenga burbujas animadas",
+    )
+
+    assert result == RouterResult(route=ConversationRoute.MODIFY)
+    messages, kwargs = calls[0]
+    assert "quiero hacer modificaciones" in messages[1]["content"]
+    assert "burbujas animadas" in messages[1]["content"]
+    assert "index.html" in messages[1]["content"]
+    assert kwargs == {"temperature": 0, "max_tokens": 32, "timeout": 10}
+
+
+def test_conversational_router_parses_clarify_and_reports_llm_error_without_fallback() -> None:
+    class ClarifyClient:
+        def chat(self, _messages, **_kwargs):
+            return SimpleNamespace(content="CLARIFY", tokens=1)
+
+    class FailingClient:
+        def chat(self, _messages, **_kwargs):
+            raise TimeoutError("router timed out")
+
+    clarify = Orchestrator(ClarifyClient()).route_conversation([], "none", "", "quiero continuar")
+    failed = Orchestrator(FailingClient()).route_conversation([], "modify", "context", "burbujas")
+
+    assert clarify == RouterResult(route=ConversationRoute.CLARIFY)
+    assert failed.route is None
+    assert "router timed out" in (failed.error or "")
+
+
+@pytest.mark.asyncio
+async def test_pending_modify_uses_conversational_router_and_does_not_repeat_clarification(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    app.pending_modify_clarification = True
+    app.active_thread = "modify"
+    app.conversation_turns = [
+        {"role": "user", "content": "quiero hacer modificaciones en mi proyecto"}
+    ]
+    routed: list[tuple[object, str, str, str]] = []
+    app._orchestrator = SimpleNamespace(
+        route_conversation=lambda conversation, active_thread, project_context, latest: (
+            routed.append((conversation, active_thread, project_context, latest))
+            or RouterResult(route=ConversationRoute.MODIFY)
+        )
+    )
+    clarification_messages: list[str] = []
+    async with app.run_test() as pilot:
+        app._orchestrator = SimpleNamespace(
+            route_conversation=lambda conversation, active_thread, project_context, latest: (
+                routed.append((conversation, active_thread, project_context, latest))
+                or RouterResult(route=ConversationRoute.MODIFY)
+            )
+        )
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "que el fondo tenga burbujas animadas que al clicar cambien de color"
+        await pilot.press("enter")
+
+    assert app.pending_modify_clarification is False
+    assert app._confirm_mode is True
+    assert app._confirm_options[app._confirm_selected][2] == "modify"
+    assert clarification_messages == []
+    assert routed[0][1] == "modify"
+    assert "quiero hacer modificaciones" in str(routed[0][0])
+
+
+@pytest.mark.asyncio
+async def test_router_error_offers_explicit_choices_without_clarification_loop(tmp_path, monkeypatch) -> None:
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    app._orchestrator = SimpleNamespace(
+        route_conversation=lambda *_args: RouterResult(error="router unavailable")
+    )
+    messages: list[str] = []
+    async with app.run_test() as pilot:
+        app._orchestrator = SimpleNamespace(
+            route_conversation=lambda *_args: RouterResult(error="router unavailable")
+        )
+        app._log_pipeline = messages.append  # type: ignore[method-assign]
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "quiero hacer modificaciones en mi proyecto"
+        await pilot.press("enter")
+
+    assert app._confirm_mode is True
+    assert app.pending_modify_clarification is False
+    assert any("router" in message.lower() and "Modify" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_question_route_inside_modify_thread_answers_directly(tmp_path, monkeypatch) -> None:
+    (tmp_path / "index.html").write_text("<main>actual</main>", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+    app.active_thread = "modify"
+    answered: list[str] = []
+
+    async with app.run_test() as pilot:
+        app._orchestrator = SimpleNamespace(
+            route_conversation=lambda *_args: RouterResult(route=ConversationRoute.QUESTION)
+        )
+        app._answer_question = lambda text: answered.append(text)  # type: ignore[method-assign]
+        chat_input = app.query_one("#chat-input")
+        chat_input.value = "¿qué archivos tendríamos que tocar para eso?"
+        await pilot.press("enter")
+
+    assert answered == ["¿qué archivos tendríamos que tocar para eso?"]
+    assert app.active_thread == "question"
+    assert app._confirm_mode is False

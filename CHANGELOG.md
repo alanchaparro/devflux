@@ -7,21 +7,19 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 ## [Unreleased]
 
 ### Added
+- Router LLM conversacional para proyectos existentes: recibe el historial `conversation_turns`, `active_thread` (`none|modify|bugs|question`), el contexto seguro del proyecto y el último mensaje; devuelve `MODIFY`, `BUG`, `QUESTION` o `CLARIFY` como JSON o etiqueta simple.
+- Cobertura del router para historial/contexto, seguimiento concreto de una aclaración, preguntas dentro de un hilo de modificación y fallos recuperables.
+- Documentación humana y guía de agentes del contrato conversacional, selección por hilo y garantías anti-loop/anti-auto-pipeline.
 - Menú contextual de confirmación con cinco acciones explícitas antes de ejecutar una solicitud: crear proyecto, modificar el proyecto actual, buscar/corregir bugs, responder como pregunta y reescribir la idea.
 - Navegación de confirmación mediante **↑/↓**, selección mediante **Enter** y cancelación mediante **Esc**.
-- Selección predeterminada según intención y contexto: pregunta/conversación, solicitud de bug, proyecto existente o directorio vacío.
-- Pruebas para las cinco acciones, las selecciones predeterminadas y el envío con Enter.
-- Gate conservador para modificaciones y bugs en proyectos existentes: clasifica cada pedido como `ACTIONABLE_CHANGE` o `NEEDS_CLARIFICATION` con el contexto seguro del proyecto, `temperature=0`, hasta 4 tokens y 5 s de espera.
-- Estado pendiente de aclaración que conserva la acción elegida y, al recibir un pedido concreto, vuelve a abrir el selector con esa acción preseleccionada.
 
 ### Changed
+- Se reemplazó el gate aislado `ACTIONABLE_CHANGE`/`NEEDS_CLARIFICATION` por enrutamiento conversacional basado en el hilo completo; una petición concreta posterior vuelve a abrir **Modificar proyecto actual** sin repetir aclaración.
+- El router usa `temperature=0`, hasta 32 tokens y 10 s de espera; las decisiones `MODIFY` y `BUG` siguen requiriendo confirmación explícita antes de ejecutar un equipo.
 - La confirmación fuerza el equipo elegido por la persona usuaria: `equipo-dev` para crear o modificar y `equipo-bugs` para corregir errores.
 - La opción de modificación añade instrucciones para reutilizar el proyecto y su contexto, evitando archivos duplicados innecesarios.
-- Las solicitudes vagas de modificación o bugs ahora solicitan qué agregar, cambiar o corregir antes de consumir el presupuesto de `PipelineRunner`; la ejecución sigue requiriendo confirmación explícita.
 
 ### Fixed
-- Ante ausencia o error del LLM, timeout o una salida distinta de `ACTIONABLE_CHANGE`, el gate aplica el fallback seguro `NEEDS_CLARIFICATION` y no inicia un pipeline.
-
+- Un error, timeout, ausencia de cliente o salida inválida del router muestra alternativas explícitas **Modify**/**Question**, sin reintento automático, loop de aclaración ni ejecución de `PipelineRunner`.
+- El **primer Enter** que envía una idea enruta el turno pero no puede confirmar la selección ni arrancar equipos automáticamente; el **segundo Enter** confirma la acción resaltada.
 - **Esc** ahora cancela correctamente la confirmación contextual pese al binding prioritario global de la TUI.
-- El **primer Enter** que envía una idea ahora solo abre la confirmación; ya no puede confirmar esa misma selección y arrancar `equipo-dev` automáticamente. El **segundo Enter** confirma la acción resaltada.
-- Cuando hay un proyecto existente y el texto pide continuar, seguir o retomar ese proyecto, se preselecciona **Modificar proyecto actual** y `is_running` permanece en `false` hasta la confirmación explícita.

@@ -20,7 +20,7 @@ En el primer inicio, un wizard guía la configuración del provider (Ollama loca
 
 ## Menú contextual de confirmación
 
-El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** envía la idea y abre el menú de confirmación, sin iniciar un pipeline ni una consulta al LLM; el **segundo Enter** ejecuta la opción que esté resaltada. Usá:
+El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** añade el turno a la conversación y lo enruta con un LLM, pero **nunca** inicia un pipeline; el **segundo Enter** ejecuta la opción que esté resaltada. Usá:
 
 - **↑ / ↓** para mover la selección (la navegación vuelve del último elemento al primero).
 - **Enter** (una vez abierto el menú) para ejecutar la opción resaltada.
@@ -29,31 +29,21 @@ El flujo usa dos pulsaciones de **Enter** separadas: el **primer Enter** envía 
 | Acción | Resultado |
 | --- | --- |
 | **Crear proyecto nuevo** | Ejecuta `equipo-dev` para crear un proyecto desde cero. |
-| **Modificar proyecto actual** | Primero verifica que el pedido describa un cambio concreto; solo entonces, tras confirmar, ejecuta `equipo-dev` sobre el proyecto existente e incluye la instrucción de reutilizar los archivos y `.devflux/context.md` cuando exista. |
-| **Buscar/corregir bugs** | Primero verifica que se haya descrito un error concreto; solo entonces, tras confirmar, ejecuta `equipo-bugs` sobre los archivos existentes. |
+| **Modificar proyecto actual** | Cuando el router devuelve `MODIFY` y hay archivos de proyecto, abre `equipo-dev` tras la confirmación; el prompt pide reutilizar los archivos y `.devflux/context.md` cuando exista. |
+| **Buscar/corregir bugs** | Cuando el router devuelve `BUG`, abre `equipo-bugs` tras la confirmación. |
 | **Responder como pregunta** | Consulta al LLM directamente con el contexto disponible; no ejecuta pipeline. |
 | **Reescribir mi idea** | Restaura el texto en el chat para editarlo y volver a enviarlo. |
 
-### Selección contextual predeterminada
+### Router conversacional y garantías anti-loop
 
-La lista completa siempre está disponible; DevFlux solo preselecciona la opción más probable:
+Cada envío llama a `Orchestrator.route_conversation()` con cuatro fuentes: todos los `conversation_turns` de la sesión, `active_thread` (`none`, `modify`, `bugs` o `question`), el resumen seguro de `.devflux/context.md` y el inventario de archivos, y el último mensaje. El router devuelve solo `MODIFY`, `BUG`, `QUESTION` o `CLARIFY` (JSON estricto o etiqueta simple), con `temperature=0`, hasta 32 tokens y espera máxima de 10 s.
 
-1. En una petición de código que describe explícitamente un error o bug, preselecciona **Buscar/corregir bugs**.
-2. Si hay archivos de proyecto visibles y el texto pide explícitamente continuar, seguir o retomar un proyecto, preselecciona **Modificar proyecto actual**, incluso si el clasificador lo considera conversación.
-3. Si la intención clasificada es una **pregunta** o conversación que no pide continuar un proyecto, preselecciona **Responder como pregunta**.
-4. En una petición de código con archivos de proyecto visibles, preselecciona **Modificar proyecto actual**.
-5. En un directorio sin archivos de proyecto visibles, preselecciona **Crear proyecto nuevo**.
+- **`MODIFY`** abre la confirmación de modificación si existe un proyecto, o de creación en un directorio vacío. Un detalle posterior concreto —por ejemplo, «que el fondo tenga burbujas animadas que al clicar cambien de color»— se reconoce como `MODIFY` dentro del hilo `modify`; no repite la aclaración.
+- **`BUG`** abre la confirmación de `equipo-bugs`; **`QUESTION`** responde directamente sin `PipelineRunner`.
+- **`CLARIFY`** se reserva para mensajes sin una modificación implementable ni una pregunta contestable, como «quiero continuar» sin detalles. Conserva el hilo `modify` o `bugs` y solicita precisión sin lanzar equipos.
+- Si el router no tiene cliente, vence el tiempo, falla o devuelve una salida inválida, DevFlux muestra alternativas explícitas **Modify** y **Question**. No reintenta el router, no entra en un loop de aclaración y no inicia automáticamente un pipeline.
 
-La detección de proyecto existente usa el inventario de contexto de DevFlux, que excluye metadatos y archivos no confiables como `.git`, `.devflux`, cachés y secretos. La selección sigue siendo una confirmación: tras el primer Enter podés elegir cualquiera de las cinco acciones antes de que se haga una llamada al LLM o se ejecute un pipeline.
-
-### Gate de modificaciones y protección anti-gasto
-
-Al confirmar **Modificar proyecto actual** o **Buscar/corregir bugs**, DevFlux evalúa si el texto es una solicitud implementable:
-
-- **`ACTIONABLE_CHANGE`**: identifica algo para agregar, cambiar, quitar o corregir (por ejemplo, «cambiá el botón principal a verde» o «el contador no incrementa»). DevFlux abre o conserva la confirmación correspondiente; solo el siguiente **Enter** inicia el equipo.
-- **`NEEDS_CLARIFICATION`**: el pedido solo expresa intención de continuar, modificar, mejorar o avanzar, sin indicar qué trabajo realizar (por ejemplo, «quiero continuar mi proyecto»). DevFlux pide detalle y queda pendiente: no crea ni ejecuta `PipelineRunner`.
-
-El clasificador recibe el inventario seguro del proyecto y usa una consulta acotada y conservadora (`temperature=0`, hasta 4 tokens y 5 s de espera). Si no hay cliente LLM, falla la consulta o la respuesta no es exactamente `ACTIONABLE_CHANGE`, toma la decisión segura `NEEDS_CLARIFICATION`. Así se evita gastar el presupuesto del pipeline en una tarea ambigua. La respuesta concreta posterior se vuelve a validar, reabre el selector con **Modificar proyecto actual** (o **Buscar/corregir bugs**) seleccionado y todavía requiere una confirmación explícita antes de ejecutar el pipeline.
+La selección sigue siendo una confirmación: salvo preguntas, ningún equipo se ejecuta hasta un Enter posterior sobre la opción resaltada. El inventario excluye `.git`, `.devflux`, cachés y secretos, por lo que esos metadatos no convierten un directorio vacío en proyecto existente.
 
 ## Stack
 

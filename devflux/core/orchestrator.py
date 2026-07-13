@@ -19,7 +19,10 @@ as CODE because "mejora" sounded like "mejorar codigo". Now:
 
 from __future__ import annotations
 
+import json
+import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -43,11 +46,21 @@ class IntentType(Enum):
     CHAT = "chat"          # Casual greeting/chat → respond directly
 
 
-class ModificationRequest(Enum):
-    """Whether an existing-project request is specific enough to run."""
+class ConversationRoute(Enum):
+    """Intent selected by the conversational LLM router."""
 
-    ACTIONABLE_CHANGE = "ACTIONABLE_CHANGE"
-    NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
+    MODIFY = "MODIFY"
+    BUG = "BUG"
+    QUESTION = "QUESTION"
+    CLARIFY = "CLARIFY"
+
+
+@dataclass(frozen=True)
+class RouterResult:
+    """A valid router decision or an explicit, recoverable router failure."""
+
+    route: ConversationRoute | None = None
+    error: str | None = None
 
 
 # Lesson 12: roles per complexity level
@@ -107,20 +120,23 @@ _CLASSIFY_SYSTEM_PROMPT = (
     "Nada mas. Sin puntuacion. Sin explicacion."
 )
 
-_ACTIONABILITY_SYSTEM_PROMPT = (
-    "Sos un clasificador de solicitudes para un proyecto existente. "
-    "Decidi si el usuario describio un cambio concreto que se pueda implementar.\n\n"
-    "ACTIONABLE_CHANGE: pide agregar, cambiar, quitar o corregir algo identificable.\n"
-    'Ejemplos: "agrega burbujas animadas al fondo", "cambia el boton a verde", '
-    '"arregla el contador que no incrementa".\n\n'
-    "NEEDS_CLARIFICATION: solo expresa deseo de continuar, modificar, avanzar o mejorar "
-    "sin decir que cambio concreto quiere.\n"
-    'Ejemplos: "quiero continuar mi proyecto", "quiero modificar algo", "seguimos", '
-    '"mejoralo", "quiero avanzar".\n\n'
-    "El contexto confirma que existe un proyecto, pero NO convierte una solicitud vaga en "
-    "una tarea concreta. Ante cualquier duda responde NEEDS_CLARIFICATION.\n\n"
-    "Responde EXACTAMENTE una sola etiqueta: ACTIONABLE_CHANGE o NEEDS_CLARIFICATION."
-)
+_CONVERSATION_ROUTER_SYSTEM_PROMPT = """Sos el router conversacional de DevFlux para un proyecto existente.
+Tu tarea es elegir el hilo correcto usando TODA la conversación, el hilo activo,
+el contexto del proyecto y el último mensaje. No clasifiques por palabras aisladas.
+
+Devolvé exclusivamente JSON válido: {\"route\": \"MODIFY|BUG|QUESTION|CLARIFY\"}.
+
+MODIFY: hay una modificación implementable sobre archivos o proyecto existentes,
+aunque no use verbos técnicos. Ejemplos obligatorios: "que el fondo tenga burbujas
+animadas", "que al clicar cambie de color", "poné música", "ahora quiero que sea
+más oscuro". Si el hilo activo es modify y el nuevo mensaje concreta el pedido,
+es MODIFY.
+BUG: describe un error o comportamiento roto concreto.
+QUESTION: pide información, opinión o explicación sin pedir un cambio.
+CLARIFY: únicamente si no hay objetivo implementable ni pregunta contestable;
+ejemplo: "quiero continuar" sin detalle.
+Nunca uses CLARIFY solo porque falte un verbo técnico. Nunca agregues explicación,
+markdown ni otras claves al JSON."""
 
 
 class Orchestrator:
@@ -149,6 +165,62 @@ class Orchestrator:
         self.teams = [team]
         self._roles = self._compute_roles()
         return self.teams, complexity
+
+    def route_conversation(
+        self,
+        conversation: list[dict[str, str]],
+        active_thread: str,
+        project_context: str,
+        latest_user_message: str,
+    ) -> RouterResult:
+        """Route a turn using the entire thread; never fall back to keywords."""
+        if self._llm_client is None:
+            return RouterResult(error="No hay cliente LLM configurado para el router.")
+
+        transcript = json.dumps(conversation, ensure_ascii=False)
+        context = (
+            f"HILO ACTIVO: {active_thread}\n\n"
+            f"CONTEXTO DEL PROYECTO:\n{project_context}\n\n"
+            f"CONVERSACIÓN COMPLETA (orden cronológico):\n{transcript}\n\n"
+            f"ÚLTIMO MENSAJE DEL USUARIO:\n{latest_user_message}"
+        )
+        try:
+            response = self._llm_client.chat(
+                [
+                    {"role": "system", "content": _CONVERSATION_ROUTER_SYSTEM_PROMPT},
+                    {"role": "user", "content": context},
+                ],
+                temperature=0,
+                max_tokens=32,
+                timeout=10,
+            )
+        except Exception as exc:
+            self._debug_log_classify(latest_user_message, f"ROUTER ERROR: {exc}", "ERROR")
+            return RouterResult(error=f"No se pudo decidir el hilo: {exc}")
+
+        raw = (response.content or "").strip()
+        route = self._parse_conversation_route(raw)
+        if route is None:
+            self._debug_log_classify(latest_user_message, f"ROUTER INVALID: {raw!r}", "ERROR")
+            return RouterResult(error="El router LLM devolvió una respuesta inválida. Reintentá o elegí Modify/Question.")
+        self._debug_log_classify(latest_user_message, f"ROUTER LLM: {raw}", route.value)
+        return RouterResult(route=route)
+
+    @staticmethod
+    def _parse_conversation_route(raw: str) -> ConversationRoute | None:
+        """Accept strict JSON plus a bare route, without heuristic interpretation."""
+        candidate = raw.strip()
+        try:
+            decoded = json.loads(candidate)
+            if isinstance(decoded, dict):
+                candidate = str(decoded.get("route", ""))
+        except json.JSONDecodeError:
+            match = re.search(r"\b(MODIFY|BUG|QUESTION|CLARIFY)\b", candidate.upper())
+            candidate = match.group(1) if match else ""
+        try:
+            return ConversationRoute(candidate.strip().upper())
+        except ValueError:
+            return None
 
     def classify_intent(self, user_input: str) -> IntentType:
         """Classify the high-level intent of the user input using LLM.
@@ -205,46 +277,6 @@ class Orchestrator:
             user_input,
             f"LLM: {raw} ({elapsed:.2f}s, {response.tokens} tokens)",
             f"{result.value.upper()}"
-        )
-        return result
-
-    def classify_modification_request(
-        self, user_input: str, project_context: str
-    ) -> ModificationRequest:
-        """Gate existing-project changes with a tiny, conservative LLM call."""
-        if self._llm_client is None:
-            self._debug_log_classify(user_input, "NO_LLM_CLIENT", "NEEDS_CLARIFICATION")
-            return ModificationRequest.NEEDS_CLARIFICATION
-
-        messages = [
-            {
-                "role": "system",
-                "content": f"{_ACTIONABILITY_SYSTEM_PROMPT}\n\n{project_context}",
-            },
-            {"role": "user", "content": user_input},
-        ]
-        try:
-            t0 = time.time()
-            response = self._llm_client.chat(
-                messages, temperature=0, max_tokens=4, timeout=5
-            )
-            elapsed = time.time() - t0
-        except Exception as exc:
-            self._debug_log_classify(
-                user_input, f"ACTIONABILITY ERROR: {exc}", "NEEDS_CLARIFICATION"
-            )
-            return ModificationRequest.NEEDS_CLARIFICATION
-
-        raw = response.content.strip().upper() if response.content else ""
-        result = (
-            ModificationRequest.ACTIONABLE_CHANGE
-            if raw == ModificationRequest.ACTIONABLE_CHANGE.value
-            else ModificationRequest.NEEDS_CLARIFICATION
-        )
-        self._debug_log_classify(
-            user_input,
-            f"ACTIONABILITY LLM: {raw} ({elapsed:.2f}s, {response.tokens} tokens)",
-            result.value,
         )
         return result
 

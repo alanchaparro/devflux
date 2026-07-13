@@ -66,8 +66,9 @@ from ..core.client import LLMClient
 from ..core.orchestrator import (
     Orchestrator,
     Complexity,
+    ConversationRoute,
     IntentType,
-    ModificationRequest,
+    RouterResult,
     COMPLEXITY_ROLES,
     COMPLEXITY_TOKENS,
 )
@@ -317,6 +318,10 @@ class DevFluxApp(App):
         self._confirm_selected: int = 0
         self._confirm_intent: IntentType = IntentType.CODE
         self._confirm_text: str = ""
+        # Conversational router state persists the current thread across turns.
+        self.conversation_turns: list[dict[str, str]] = []
+        self.active_thread: str = "none"  # none | modify | bugs | question
+        self._router_error_mode: bool = False
         # A vague modification must receive a concrete follow-up before a team runs.
         self.pending_modify_clarification: bool = False
         self._pending_clarification_action: str | None = None
@@ -583,51 +588,76 @@ class DevFluxApp(App):
         # Log user message
         self._log_chat(f"[bold blue]> {text}[/bold blue]")
 
-        # FEATURE: Memoria de sesion — track user input for context saving
-        self._last_user_input = text
+        # Preserve every turn before routing so a clarification reply is evaluated
+        # with its original request, active thread, context summary and inventory.
+        self.conversation_turns.append({"role": "user", "content": text})
+        router_result = self._orchestrator.route_conversation(
+            self.conversation_turns,
+            self.active_thread,
+            load_context_for_prompt(Path.cwd()),
+            text,
+        )
+        self._apply_conversation_route(text, router_result)
 
-        # A clarification reply is interpreted as the requested project change,
-        # not as a fresh generic request. It still receives confirmation.
-        if self.pending_modify_clarification or self._pending_clarification_action:
-            pending_action = self._pending_clarification_action or "modify"
-            decision = self._orchestrator.classify_modification_request(
-                text, load_context_for_prompt(Path.cwd())
-            )
-            if decision is ModificationRequest.NEEDS_CLARIFICATION:
-                self._show_clarification(pending_action)
-                return
-            self.pending_modify_clarification = False
-            self._pending_clarification_action = None
+    def _apply_conversation_route(self, text: str, result: RouterResult) -> None:
+        """Apply a structured LLM route without reclassifying by keywords."""
+        self._last_user_input = text
+        if result.error:
+            self._router_error_mode = True
             self._confirm_mode = True
             self._confirm_text = text
             self._confirm_intent = IntentType.CODE
-            self._confirm_options, _unused_selected = confirmation_for_intent(
-                IntentType.CODE, has_existing_project=True
+            self._confirm_options, self._confirm_selected = confirmation_for_intent(
+                IntentType.CODE, has_existing_project=bool(load_context_files(Path.cwd()))
             )
             self._confirm_selected = next(
                 i for i, (_number, _description, action) in enumerate(self._confirm_options)
-                if action == pending_action
+                if action == "modify"
             )
+            message = (
+                f"[bold red]Error del router:[/bold red] {result.error} "
+                "Elegí explícitamente [bold]Modify[/bold] para describir un cambio "
+                "o [bold]Question[/bold] para responder sin pipeline."
+            )
+            self._log_chat(message)
+            self._log_pipeline(message)
             self._show_confirmation()
             return
 
-        # FEATURE 2: Classify intent BEFORE anything else
-        intent = self._orchestrator.classify_intent(text)
+        route = result.route
+        if route is ConversationRoute.CLARIFY:
+            action = "bugs" if self.active_thread == "bugs" else "modify"
+            self.active_thread = "bugs" if action == "bugs" else "modify"
+            self._pending_clarification_action = action
+            self.pending_modify_clarification = action == "modify"
+            self._show_clarification(action)
+            return
 
-        # FEATURE 3: Enter confirm mode instead of executing directly
+        self.pending_modify_clarification = False
+        self._pending_clarification_action = None
+        self._router_error_mode = False
+        if route is ConversationRoute.QUESTION:
+            self.active_thread = "question"
+            self.is_running = True
+            self._log_chat("[dim yellow]Orquestador: Respondiendo pregunta directamente...[/dim yellow]")
+            self._answer_question(text)
+            return
+
+        has_existing_project = bool(load_context_files(Path.cwd()))
+        action = "bugs" if route is ConversationRoute.BUG else (
+            "modify" if has_existing_project else "create"
+        )
+        self.active_thread = "bugs" if action == "bugs" else "modify"
         self._confirm_mode = True
         self._confirm_text = text
-        self._confirm_intent = intent
-        # The project inventory excludes .devflux, .git, caches, and secrets.
-        has_existing_project = bool(load_context_files(Path.cwd()))
-        self._confirm_options, self._confirm_selected = confirmation_for_intent(
-            intent,
-            has_existing_project=has_existing_project,
-            is_bug_request=Orchestrator.is_bug_request(text),
-            is_continuation_request=is_project_continuation_request(text),
+        self._confirm_intent = IntentType.CODE
+        self._confirm_options, _unused_selected = confirmation_for_intent(
+            IntentType.CODE, has_existing_project=has_existing_project
         )
-
-        # Show confirmation in pipeline log
+        self._confirm_selected = next(
+            i for i, (_number, _description, candidate) in enumerate(self._confirm_options)
+            if candidate == action
+        )
         self._show_confirmation()
 
     @work(thread=True)
@@ -1465,16 +1495,23 @@ class DevFluxApp(App):
         # Exit confirm mode
         self._confirm_mode = False
 
-        # Never launch a team for a vague existing-project modification or bug report.
-        if action in {"modify", "bugs"}:
-            decision = self._orchestrator.classify_modification_request(
-                text, load_context_for_prompt(Path.cwd())
-            )
-            if decision is ModificationRequest.NEEDS_CLARIFICATION:
-                self._pending_clarification_action = action
-                self.pending_modify_clarification = action == "modify"
-                self._show_clarification(action)
+        # A router failure is recoverable by an explicit user choice. Do not call
+        # the router again or turn it into another clarification loop.
+        if self._router_error_mode:
+            self._router_error_mode = False
+            if action == "modify":
+                self.active_thread = "modify"
+                self._pending_clarification_action = "modify"
+                self.pending_modify_clarification = True
+                self._show_clarification("modify")
                 return
+            if action == "question":
+                self.active_thread = "question"
+                self.is_running = True
+                self._answer_question(text)
+                return
+            self._log_chat("[cyan]Elegí Modify o Question para continuar después del error del router.[/cyan]")
+            return
 
         if action in {"create", "modify", "bugs"}:
             team = "bugs" if action == "bugs" else "dev"
