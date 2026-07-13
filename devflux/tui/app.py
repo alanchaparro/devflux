@@ -60,7 +60,13 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from ..core.config import DevFluxConfig, PROVIDERS, CONFIG_PATH, DEVFLUX_DIR
+from ..core.config import (
+    DevFluxConfig,
+    PROVIDERS,
+    CONFIG_PATH,
+    DEVFLUX_DIR,
+    normalize_provider,
+)
 from ..core.credentials import CredentialsStore
 from ..core.client import LLMClient
 from ..core.orchestrator import (
@@ -105,6 +111,9 @@ THEMES = ["neon", "dracula", "monokai", "nord", "gruvbox", "tokyo-night"]
 
 # Lesson 8: ASCII-only spinner frames
 SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
+
+# The interface exposes friendly labels only. Canonical keys stay internal.
+PROVIDER_CHOICES = [("Ollama Cloud", "ollama-cloud"), ("Ollama Local", "ollama-local")]
 
 
 def is_project_continuation_request(text: str) -> bool:
@@ -171,12 +180,32 @@ class MenuWidget(Static):
 
     can_focus = True
 
-    def __init__(self, items: list[str], title: str = "Menu", on_select=None) -> None:
-        super().__init__()
-        self._items = items
+    def __init__(
+        self,
+        items: list[str] | None = None,
+        title: str = "Menu",
+        on_select=None,
+        *,
+        id: str | None = None,
+    ) -> None:
+        super().__init__(id=id)
+        self._items = items or []
         self._title = title
         self._on_select = on_select
         self._selected = 0
+
+    def set_menu(self, items: list[str], title: str, on_select, selected: int = 0) -> None:
+        """Reuse this mounted keyboard selector for a new list of choices."""
+        self._items = items
+        self._title = title
+        self._on_select = on_select
+        self._selected = max(0, min(selected, len(items) - 1)) if items else 0
+        self.refresh()
+
+    def select_current(self) -> None:
+        """Confirm the highlighted choice (used by the priority Enter binding)."""
+        if self._items and self._on_select:
+            self._on_select(self._items[self._selected])
 
     def render(self) -> str:
         """Render menu items. Lesson 1: override render() (NOT _render())."""
@@ -207,8 +236,7 @@ class MenuWidget(Static):
             event.prevent_default()
             event.stop()
         elif key == "enter":
-            if self._on_select:
-                self._on_select(self._items[self._selected])
+            self.select_current()
             event.prevent_default()
             event.stop()
         elif key == "escape":
@@ -318,6 +346,11 @@ class DevFluxApp(App):
         self._pipeline_count = 0
         # Settings state: track if we're waiting for input (provider/model/key)
         self._settings_input_mode: str | None = None
+        # Explicit wizard state prevents API-key/model input from being treated
+        # as a provider after Enter.
+        self._wizard_step = "provider"
+        self._pending_provider: str | None = None
+        self._pending_config: DevFluxConfig | None = None
         # BUG 2 DEFINITIVE FIX: NO TabbedContent — use file list + RichLog
         # Store file contents keyed by filename for display
         self._code_files: dict[str, Any] = {}  # fname -> (display_content, is_diff)
@@ -362,10 +395,16 @@ class DevFluxApp(App):
             Static(
                 "[bold yellow]Bienvenido a DevFlux![/bold yellow]\n\n"
                 "No tenes configuracion. Vamos a configurar.\n\n"
-                "Escribi 'ollama-local' o 'ollama-cloud' y presiona Enter:",
+                "Elegí cómo querés usar el modelo con ↑/↓ y Enter:",
                 id="wizard-content",
             ),
-            Input(placeholder="ollama-local | ollama-cloud", id="wizard-input"),
+            MenuWidget(
+                [label for label, _key in PROVIDER_CHOICES],
+                "Proveedor",
+                on_select=self._select_wizard_provider,
+                id="wizard-selector",
+            ),
+            Input(placeholder="Pegá tu API key", password=True, id="wizard-input"),
             id="wizard",
         )
 
@@ -378,7 +417,7 @@ class DevFluxApp(App):
                 Static(BANNER, id="banner"),
                 RichLog(id="chat-log", wrap=True, markup=True),
                 Input(placeholder="Escribi tu idea...", id="chat-input"),
-                Static("", id="menu-widget"),
+                MenuWidget(id="menu-widget"),
                 RichLog(id="pipeline-log", wrap=True, markup=True),
                 id="left-panel",
             ),
@@ -394,27 +433,31 @@ class DevFluxApp(App):
 
     def on_mount(self) -> None:
         """Called when app is mounted."""
-        if self._config is not None:
-            self._client = LLMClient(self._config, self._creds)
-            # REFACTOR: Pass LLM client to orchestrator for intent classification
-            self._orchestrator = Orchestrator(self._client)
-            # Keep the first impression conversational. Provider, model and cwd
-            # remain available only in Ctrl+D diagnostics.
-            log = self.query_one("#chat-log", RichLog)
-            log.write("[bold green]Hola, soy DevFlux.[/bold green]")
-            log.write("Contame qué querés crear, cambiar, revisar o entender de tu proyecto.")
+        if self._config is None:
+            self.query_one("#wizard-input", Input).visible = False
+            self.query_one("#wizard-selector", MenuWidget).focus()
+            return
 
-            diagnostics = self.query_one("#pipeline-log", RichLog)
-            diagnostics.write("[bold]Diagnóstico[/bold]")
-            diagnostics.write(f"Modelo: {self._config.model} | Provider: {self._config.provider}")
-            diagnostics.write(f"Directorio: {Path.cwd()}")
-            diagnostics.visible = False
-            viewer = self.query_one("#code-viewer", RichLog)
-            viewer.write("[dim]Todavía no hay cambios para mostrar.[/dim]")
+        self._client = LLMClient(self._config, self._creds)
+        # REFACTOR: Pass LLM client to orchestrator for intent classification
+        self._orchestrator = Orchestrator(self._client)
+        # Keep the first impression conversational. Provider, model and cwd
+        # remain available only in Ctrl+D diagnostics.
+        log = self.query_one("#chat-log", RichLog)
+        log.write("[bold green]Hola, soy DevFlux.[/bold green]")
+        log.write("Contame qué querés crear, cambiar, revisar o entender de tu proyecto.")
 
-            # Hide menu widget initially (Lesson 10: visible, not display)
-            menu = self.query_one("#menu-widget", Static)
-            menu.visible = False
+        diagnostics = self.query_one("#pipeline-log", RichLog)
+        diagnostics.write("[bold]Diagnóstico[/bold]")
+        diagnostics.write(f"Modelo: {self._config.model} | Provider: {self._config.provider}")
+        diagnostics.write(f"Directorio: {Path.cwd()}")
+        diagnostics.visible = False
+        viewer = self.query_one("#code-viewer", RichLog)
+        viewer.write("[dim]Todavía no hay cambios para mostrar.[/dim]")
+
+        # Hide menu widget initially (Lesson 10: visible, not display)
+        menu = self.query_one("#menu-widget", MenuWidget)
+        menu.visible = False
 
     # --- Wizard handling ---
 
@@ -437,6 +480,19 @@ class DevFluxApp(App):
             self._handle_confirm_select()
             return
 
+        # A selector owns Enter while visible. The app-level binding has
+        # priority, so dispatch it explicitly instead of treating its state as
+        # free-form text input.
+        if self._config is None and self._wizard_step in {"provider", "model"}:
+            self.query_one("#wizard-selector", MenuWidget).select_current()
+            return
+        if self._settings_input_mode in {"provider_selector", "model_selector"}:
+            self.query_one("#menu-widget", MenuWidget).select_current()
+            return
+        if self.show_menu or self.show_settings:
+            self.query_one("#menu-widget", MenuWidget).select_current()
+            return
+
         # Determine which input widget is active
         if self._config is None:
             # Wizard mode
@@ -447,8 +503,7 @@ class DevFluxApp(App):
             value = wizard_input.value
             if not value.strip():
                 return
-            wizard_input.value = ""
-            self._handle_wizard(value)
+            self._submit_wizard(value)
             return
 
         # Check if we're in settings input mode (waiting for provider/model/key)
@@ -498,94 +553,92 @@ class DevFluxApp(App):
             return
 
         if self._config is None:
-            self._handle_wizard(event.value)
+            if self._wizard_step == "api_key":
+                self._submit_wizard(event.value)
         else:
             # If we got here, the binding didn't fire, so handle it.
             # _handle_chat_submit clears input and logs the message itself.
             self._handle_chat_submit(event.value)
 
-    def _handle_wizard(self, value: str) -> None:
-        """Handle wizard input."""
-        provider = value.strip().lower()
-        if provider not in PROVIDERS:
-            content = self.query_one("#wizard-content", Static)
-            content.update(
-                "[bold red]Provider invalido![/bold red]\n\n"
-                "Escribi 'ollama-local' o 'ollama-cloud':"
-            )
-            self.query_one("#wizard-input", Input).value = ""
+    def _submit_wizard(self, value: str) -> None:
+        """Only the API-key step accepts text input in the wizard."""
+        if self._wizard_step == "api_key":
+            self._handle_wizard_api_key(value)
+
+    def _select_wizard_provider(self, label: str | None) -> None:
+        """Begin a provider-specific flow from the visible selector."""
+        provider = dict(PROVIDER_CHOICES).get(label or "")
+        if provider is None:
             return
-
-        # Create config
         info = PROVIDERS[provider]
-        config = DevFluxConfig(
-            provider=provider,
-            base_url=info["base_url"],
-            model=info["models"][0],
+        self._pending_provider = provider
+        self._pending_config = DevFluxConfig(
+            provider=provider, base_url=info["base_url"], model=info["models"][0]
         )
-
         if info["needs_key"]:
-            # Ask for API key
-            content = self.query_one("#wizard-content", Static)
-            content.update(
-                f"[bold yellow]Configurar {info['label']}[/bold yellow]\n\n"
-                f"Pegá tu API key y presiona Enter:"
+            self.query_one("#wizard-content", Static).update(
+                f"[bold yellow]Configurar {info['label']}[/bold yellow]\n\nPegá tu API key y presioná Enter:"
             )
+            selector = self.query_one("#wizard-selector", MenuWidget)
+            selector.visible = False
             wizard_input = self.query_one("#wizard-input", Input)
             wizard_input.value = ""
-            wizard_input.placeholder = "sk-..."
-
-            # Store provider and wait for next input
-            self._pending_provider = provider
-            self._pending_config = config
+            wizard_input.visible = True
             self._wizard_step = "api_key"
+            wizard_input.focus()
             return
+        self._show_wizard_model_selector()
 
-        # No key needed — save and restart
-        config.save()
-        content = self.query_one("#wizard-content", Static)
-        content.update(
-            f"[bold green]Configurado![/bold green]\n\n"
-            f"Provider: {provider}\n"
-            f"Modelo: {config.model}\n\n"
-            "Reinicia DevFlux para empezar."
+    def _show_wizard_model_selector(self) -> None:
+        """Models are selected with the same keyboard widget, never typed."""
+        config = self._pending_config
+        if config is None:
+            return
+        selector = self.query_one("#wizard-selector", MenuWidget)
+        selector.set_menu(PROVIDERS[config.provider]["models"], "Modelo", self._select_wizard_model)
+        selector.visible = True
+        self.query_one("#wizard-input", Input).visible = False
+        self.query_one("#wizard-content", Static).update(
+            "[bold yellow]Elegí un modelo[/bold yellow]\n\nUsá ↑/↓ y Enter."
         )
+        self._wizard_step = "model"
+        selector.focus()
+
+    # Kept only as a compatibility seam for callers of the old API. The UI
+    # neither renders nor accepts a provider text field.
+    def _handle_wizard(self, value: str) -> None:
+        provider = normalize_provider(value)
+        labels = {key: label for label, key in PROVIDER_CHOICES}
+        self._select_wizard_provider(labels.get(provider, ""))
 
     def _handle_wizard_api_key(self, key: str) -> None:
-        """Handle API key input in wizard."""
         provider = self._pending_provider
-        config = self._pending_config
-        self._creds.set(provider, key)
+        if provider is None or not key.strip():
+            self.query_one("#wizard-content", Static).update(
+                "[bold red]La API key no puede estar vacía.[/bold red]\n\nPegá tu API key y presioná Enter:"
+            )
+            self.query_one("#wizard-input", Input).focus()
+            return
+        self._creds.set(provider, key.strip())
+        self.query_one("#wizard-input", Input).value = ""
+        self._show_wizard_model_selector()
 
-        # Ask for model selection
-        info = PROVIDERS[provider]
-        models_list = "\n".join(f"  {i}. {m}" for i, m in enumerate(info["models"]))
-        content = self.query_one("#wizard-content", Static)
-        content.update(
-            f"[bold yellow]Elegí modelo[/bold yellow]\n\n"
-            f"{models_list}\n\n"
-            f"Escribe el nombre del modelo:"
+    def _select_wizard_model(self, model: str | None) -> None:
+        config = self._pending_config
+        if config is None or not model:
+            return
+        config.model = model
+        config.save()
+        self.query_one("#wizard-content", Static).update(
+            f"[bold green]Configurado![/bold green]\n\n"
+            f"Proveedor: {PROVIDERS[config.provider]['label']}\n"
+            f"Modelo: {config.model}\n\nReiniciá DevFlux para empezar."
         )
-        wizard_input = self.query_one("#wizard-input", Input)
-        wizard_input.value = ""
-        wizard_input.placeholder = info["models"][0]
-        self._wizard_step = "model"
+        self.query_one("#wizard-selector", MenuWidget).visible = False
+        self._wizard_step = "done"
 
     def _handle_wizard_model(self, model: str) -> None:
-        """Handle model selection in wizard."""
-        config = self._pending_config
-        if model.strip():
-            config.model = model.strip()
-        config.save()
-
-        content = self.query_one("#wizard-content", Static)
-        content.update(
-            f"[bold green]Configurado![/bold green]\n\n"
-            f"Provider: {config.provider}\n"
-            f"Modelo: {config.model}\n"
-            f"Base URL: {config.base_url}\n\n"
-            "Reinicia DevFlux para empezar."
-        )
+        self._select_wizard_model(model)
 
     # --- Chat handling ---
 
@@ -1169,25 +1222,33 @@ class DevFluxApp(App):
         if self.show_settings:
             return  # Already in settings menu
         self.show_menu = not self.show_menu
-        menu_widget = self.query_one("#menu-widget", Static)
+        menu_widget = self.query_one("#menu-widget", MenuWidget)
 
         if self.show_menu:
-            # Create menu widget (Lesson 4: Static + on_key)
-            self._menu_widget = MenuWidget(MENU_ITEMS, "Menu", on_select=self._on_menu_select)
-            # Replace the static with our menu
+            menu_widget.set_menu(MENU_ITEMS, "Menu", self._on_menu_select)
             menu_widget.visible = True
-            menu_widget.display = True
-            menu_widget.update(self._menu_widget.render())
             menu_widget.focus()
         else:
             menu_widget.visible = False
-            menu_widget.update("")
 
     def action_close_menu(self) -> None:
         """Close a menu or cancel contextual confirmation with Escape."""
         # Escape is a priority binding, so it arrives here before App.on_key.
         if self._confirm_mode:
             self._cancel_confirmation()
+            return
+        if self._config is None:
+            self._wizard_step = "provider"
+            selector = self.query_one("#wizard-selector", MenuWidget)
+            selector.set_menu(
+                [label for label, _key in PROVIDER_CHOICES], "Proveedor", self._select_wizard_provider
+            )
+            selector.visible = True
+            self.query_one("#wizard-input", Input).visible = False
+            self.query_one("#wizard-content", Static).update(
+                "Elegí cómo querés usar el modelo con ↑/↓ y Enter:"
+            )
+            selector.focus()
             return
 
         self.show_menu = False
@@ -1235,10 +1296,9 @@ class DevFluxApp(App):
     def _show_settings(self) -> None:
         """Show settings menu."""
         self.show_settings = True
-        menu_widget = self.query_one("#menu-widget", Static)
+        menu_widget = self.query_one("#menu-widget", MenuWidget)
+        menu_widget.set_menu(SETTINGS_ITEMS, "Ajustes", self._on_settings_select)
         menu_widget.visible = True
-        self._settings_menu = MenuWidget(SETTINGS_ITEMS, "Ajustes", on_select=self._on_settings_select)
-        menu_widget.update(self._settings_menu.render())
         menu_widget.focus()
 
     def _on_settings_select(self, item: str | None) -> None:
@@ -1256,6 +1316,7 @@ class DevFluxApp(App):
             self._show_config()
         elif item == "Cambiar provider":
             self._change_provider()
+            return
         elif item == "Agregar/modificar API key":
             self._add_api_key()
         elif item == "Borrar API key":
@@ -1275,21 +1336,63 @@ class DevFluxApp(App):
             return
         has_key = self._creds.has_key(cfg.provider) if self._config else False
         self._log_chat(
-            f"[bold]Configuracion actual:[/bold]\n"
-            f"  Provider: {cfg.provider}\n"
-            f"  Model: {cfg.model}\n"
-            f"  Base URL: {cfg.base_url}\n"
-            f"  Temperature: {cfg.temperature}\n"
-            f"  Max tokens: {cfg.max_tokens}\n"
+            f"[bold]Configuración actual:[/bold]\n"
+            f"  Proveedor: {PROVIDERS[cfg.provider]['label']}\n"
+            f"  Modelo: {cfg.model}\n"
             f"  API key: {'configurada' if has_key else 'no configurada'}"
         )
 
     def _change_provider(self) -> None:
-        """Change provider — enter settings input mode."""
-        available = ", ".join(PROVIDERS.keys())
-        self._log_chat(f"[cyan]Providers disponibles: {available}[/cyan]")
-        self._log_chat("[cyan]Escribe el nombre del provider en el chat:[/cyan]")
-        self._settings_input_mode = "provider"
+        """Open a preselected provider selector; no canonical keys are typed."""
+        if self._config is None:
+            return
+        labels = [label for label, _key in PROVIDER_CHOICES]
+        current_label = {key: label for label, key in PROVIDER_CHOICES}[self._config.provider]
+        selector = self.query_one("#menu-widget", MenuWidget)
+        selector.set_menu(labels, "Cambiar proveedor", self._select_settings_provider, labels.index(current_label))
+        selector.visible = True
+        self._settings_input_mode = "provider_selector"
+        selector.focus()
+
+    def _select_settings_provider(self, label: str | None) -> None:
+        """Continue to a keyboard model selector for the selected provider."""
+        provider = dict(PROVIDER_CHOICES).get(label or "")
+        if provider is None or self._config is None:
+            return
+        info = PROVIDERS[provider]
+        self._pending_provider = provider
+        self._pending_config = DevFluxConfig(
+            provider=provider, base_url=info["base_url"], model=info["models"][0]
+        )
+        selector = self.query_one("#menu-widget", MenuWidget)
+        selector.set_menu(info["models"], "Elegir modelo", self._select_settings_model)
+        self._settings_input_mode = "model_selector"
+        selector.focus()
+
+    def _select_settings_model(self, model: str | None) -> None:
+        """Persist both choices after the user confirms the model."""
+        config = self._pending_config
+        if config is None or not model or self._config is None:
+            return
+        config.model = model
+        self._config.provider = config.provider
+        self._config.base_url = config.base_url
+        self._config.model = config.model
+        self._config.save()
+        self._settings_input_mode = None
+        try:
+            if self._client:
+                self._client.close()
+        except Exception:
+            pass
+        self._client = LLMClient(self._config, self._creds)
+        self.query_one("#menu-widget", MenuWidget).visible = False
+        info = PROVIDERS[config.provider]
+        self._log_chat(f"[bold green]Proveedor cambiado a {info['label']}.[/bold green]")
+        self._log_chat(f"Modelo: {self._config.model}")
+        if info["needs_key"] and not self._creds.has_key(config.provider):
+            self._log_chat("[yellow]Este proveedor necesita una API key. Elegí Agregar/modificar API key.[/yellow]")
+        self.query_one("#chat-input", Input).focus()
 
     def _add_api_key(self) -> None:
         """Add or modify API key — enter settings input mode."""
@@ -1297,6 +1400,9 @@ class DevFluxApp(App):
             self._log_chat("[yellow]No hay configuracion[/yellow]")
             return
         provider = self._config.provider
+        if not PROVIDERS[provider]["needs_key"]:
+            self._log_chat("[cyan]Ollama Local no necesita API key.[/cyan]")
+            return
         has_key = self._creds.has_key(provider)
         if has_key:
             self._log_chat(f"[cyan]API key ya configurada para {provider}. Escribe la nueva key para reemplazarla:[/cyan]")
@@ -1336,10 +1442,15 @@ class DevFluxApp(App):
         self.query_one("#chat-input", Input).value = ""
 
         if mode == "provider":
-            provider = value.strip().lower()
-            if provider not in PROVIDERS:
-                self._log_chat(f"[bold red]Provider invalido: {provider}[/bold red]")
+            provider = normalize_provider(value)
+            if provider is None:
+                self._log_chat("[bold red]Provider inválido.[/bold red]")
                 self._log_chat(f"Disponibles: {', '.join(PROVIDERS.keys())}")
+                chat_input = self.query_one("#chat-input", Input)
+                chat_input.value = value
+                chat_input.focus()
+                chat_input.select_all()
+                self._settings_input_mode = "provider"
                 return
             info = PROVIDERS[provider]
             if self._config:

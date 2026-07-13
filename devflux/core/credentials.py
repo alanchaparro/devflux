@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import yaml
 
-from .config import DEVFLUX_DIR
+from .config import DEVFLUX_DIR, normalize_provider
 
 CREDS_PATH = DEVFLUX_DIR / "credentials.yaml"
 
@@ -35,16 +34,25 @@ class CredentialsStore:
         os.chmod(CREDS_PATH, 0o600)
 
     def get(self, provider: str) -> str | None:
-        """Get API key for a provider."""
-        return (
-            self._data.get(f"{provider}_key")
-            or self._data.get("api_key")
-            or self._data.get(provider)  # fallback: key stored under provider name
-        )
+        """Get a provider's key, including a valid legacy Unicode key name."""
+        canonical = normalize_provider(provider)
+        if canonical is None:
+            return None
+        direct = self._data.get(f"{canonical}_key") or self._data.get("api_key")
+        if direct:
+            return direct
+        for field, value in self._data.items():
+            prefix = field[:-4] if field.endswith("_key") else field
+            if normalize_provider(prefix) == canonical and value:
+                return value
+        return None
 
     def set(self, provider: str, key: str) -> None:
-        """Store API key for a provider."""
-        self._data[f"{provider}_key"] = key
+        """Store an API key using a canonical provider name."""
+        canonical = normalize_provider(provider)
+        if canonical is None:
+            raise ValueError("Provider inválido; no se puede guardar su API key.")
+        self._data[f"{canonical}_key"] = key
         self.save()
 
     def has_key(self, provider: str) -> bool:

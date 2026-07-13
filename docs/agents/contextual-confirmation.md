@@ -16,7 +16,18 @@ DevFlux es una conversación, no un selector de equipos. El menú solo ofrece **
 - Una pregunta se responde en el chat sin crear `PipelineRunner`.
 - Ctrl+D es el único acceso normal al panel de diagnóstico.
 
-No introducir en el chat ni en el menú términos internos: nombres de equipos/roles, complejidad, tokens, proveedor, modelo, URL, reintentos automáticos, stack traces, PRD, arquitectura o planes. Los detalles de soporte se registran en diagnóstico; el mensaje de error visible debe seguir `DevFluxApp.human_model_error()` y ofrecer un reintento humano.
+No introducir en el chat términos internos: nombres de equipos/roles, complejidad, tokens, URL, reintentos automáticos, stack traces, PRD, arquitectura o planes. Los detalles de soporte se registran en diagnóstico; el mensaje de error visible debe seguir `DevFluxApp.human_model_error()` y ofrecer un reintento humano.
+
+## Selector de modelo y proveedor
+
+El asistente inicial y **Ajustes** usan un selector navegable: **↑/↓** cambia la opción, **Enter** la confirma y **Esc** cancela la selección. En el asistente inicial, cancelar vuelve al selector de proveedor; en Ajustes, cierra el selector. Las únicas etiquetas visibles son **Ollama Cloud** y **Ollama Local**; no reemplazarlas por claves de configuración ni habilitar un campo de texto para proveedor o modelo.
+
+- **Ollama Cloud** solicita una API key como único campo manual y, tras confirmarla, muestra el selector de modelo.
+- **Ollama Local** no solicita API key y pasa directamente al selector de modelo.
+- Al abrir el cambio de proveedor en **Ajustes**, el proveedor en uso debe quedar preseleccionado; el modelo se confirma en un segundo selector.
+- La API key es secreta: no registrarla, interpolarla en mensajes, mostrarla en diagnóstico ni incluirla en pruebas, capturas o documentación. Solo se puede informar si está configurada.
+
+El estado persistido de instalaciones previas debe seguir funcionando aunque contenga variantes tipográficas de guiones; la interfaz continúa usando exclusivamente los nombres humanos anteriores.
 
 ## Enrutamiento conversacional
 
@@ -63,6 +74,7 @@ No convertir esta decisión en una opción de UI ni mostrar roles o etapas al us
 | Responsabilidad | Archivo | Evidencia |
 | --- | --- | --- |
 | Chat, confirmación, diagnóstico y reintento | `devflux/tui/app.py` | `tests/test_user_experience.py`, `tests/test_tui_logic.py` |
+| Selector inicial y de Ajustes, más compatibilidad de configuración | `devflux/tui/app.py`, `devflux/core/config.py`, `devflux/core/credentials.py` | `tests/test_provider_wizard.py` |
 | Rutas y fast path | `devflux/core/orchestrator.py` | `tests/test_user_experience.py` |
 | Filtrado y escritura | `devflux/core/runner.py` | `tests/test_user_experience.py`, pruebas de hardening |
 | Prompt de edición rápida | `devflux/prompts/dev/implementer.j2` | build de paquete |
