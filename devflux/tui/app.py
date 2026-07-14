@@ -619,6 +619,11 @@ class DevFluxApp(App):
             self.query_one("#wizard-selector", MenuWidget).focus()
             return
 
+        # A new user starts with one clear surface: their idea. Code and
+        # diagnostics only appear once there is something concrete to inspect.
+        self.add_class("home")
+        self.query_one("#right-panel").visible = False
+
         self._client = LLMClient(self._config, self._creds)
         # REFACTOR: Pass LLM client to orchestrator for intent classification
         self._orchestrator = Orchestrator(self._client)
@@ -1020,6 +1025,9 @@ class DevFluxApp(App):
         if self._files_progress_announced or not files:
             return
         self._files_progress_announced = True
+        # Reveal code only once the user has something real to inspect.
+        self.remove_class("home")
+        self.query_one("#right-panel").visible = True
         self._log_chat("[yellow]Preparando actualización...[/yellow]")
         names = ", ".join(files[:-1]) + (" y " if len(files) > 1 else "") + files[-1]
         self._log_chat(f"[yellow]Actualizando {names}...[/yellow]")

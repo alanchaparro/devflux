@@ -46,6 +46,17 @@ def test_timeout_is_presented_as_human_retry_message() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_new_session_starts_in_a_distraction_free_home_view() -> None:
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+
+    async with app.run_test():
+        assert app.has_class("home")
+        assert app.query_one("#right-panel").visible is False
+        assert app.query_one("#pipeline-log").visible is False
+
+
 def test_successful_pipeline_disarms_empty_enter_retry() -> None:
     app = DevFluxApp()
     app._last_retry = ("cambia el color", ["dev"], Complexity.SIMPLE, ["implementer"])

@@ -13,6 +13,18 @@ Screen {
     width: 1fr;
 }
 
+/* Inicio: una sola superficie para que la primera decisión sea evidente. */
+DevFluxApp.home #main-layout {
+    grid-size: 1 1;
+    grid-columns: 1fr;
+}
+
+DevFluxApp.home #left-panel {
+    border: none;
+    padding: 2 4;
+    background: $background;
+}
+
 #left-panel {
     layout: vertical;
     border: solid $primary;
