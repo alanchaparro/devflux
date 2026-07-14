@@ -5,32 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "devflux"
 version = "1.0.0"
-description = "TUI conversacional para crear, continuar y mejorar proyectos de software"
+description = "TUI multi-agente para crear proyectos desde cero"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Alan Chaparro" }]
-keywords = ["tui", "ai", "developer-tools", "textual", "ollama"]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Topic :: Software Development :: Code Generators",
-]
 dependencies = [
     "textual>=0.40.0",
     "rich>=13.0.0",
     "httpx>=0.27.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
-]
-
-[project.optional-dependencies]
-test = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "build>=1.0",
 ]
 
 [project.scripts]
