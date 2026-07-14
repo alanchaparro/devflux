@@ -58,6 +58,18 @@ async def test_new_session_starts_in_a_distraction_free_home_view() -> None:
         assert "¿Qué querés crear?" in str(app.query_one("#home-title").render())
 
 
+def test_cancel_pipeline_requests_a_safe_stop() -> None:
+    app = DevFluxApp()
+    messages: list[str] = []
+    app.is_running = True
+    app._log_chat = messages.append  # type: ignore[method-assign]
+
+    app.action_cancel_pipeline()
+
+    assert app._cancel_requested is True
+    assert messages == ["[yellow]Cancelando cuando termine la etapa actual...[/yellow]"]
+
+
 def test_successful_pipeline_disarms_empty_enter_retry() -> None:
     app = DevFluxApp()
     app._last_retry = ("cambia el color", ["dev"], Complexity.SIMPLE, ["implementer"])

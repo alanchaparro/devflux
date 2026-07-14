@@ -498,6 +498,7 @@ class DevFluxApp(App):
         Binding("escape", "close_menu", "Cerrar", priority=True),
         Binding("ctrl+s", "toggle_menu", "Menú", priority=True),
         Binding("ctrl+d", "toggle_diagnostics", "Diagnóstico", priority=True),
+        Binding("ctrl+c", "cancel_pipeline", "Cancelar", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
         # File navigation in code panel (no priority — only when focused on file list)
         Binding("j", "next_file", "Sig. archivo"),
@@ -551,6 +552,7 @@ class DevFluxApp(App):
         self._retry_pending = False
         self._files_progress_announced = False
         self._verification_announced = False
+        self._cancel_requested = False
         # A vague modification must receive a concrete follow-up before a team runs.
         self.pending_modify_clarification: bool = False
         self._pending_clarification_action: str | None = None
@@ -1019,6 +1021,7 @@ class DevFluxApp(App):
             return
         self.is_running = True
         self._retry_pending = False
+        self._cancel_requested = False
         self._files_progress_announced = False
         self._verification_announced = False
         self._pipeline_count += 1
@@ -1144,6 +1147,8 @@ class DevFluxApp(App):
                 if files:
                     self.call_from_thread(self._show_files_ready, files)
                     self.call_from_thread(self._update_code_panel, files, file_contents, role, file_diffs)
+            elif status == "cancelled":
+                self.call_from_thread(self._pipeline_cancelled)
             elif status == "garbage":
                 fname = data.get("file", "?") if data else "?"
                 self.call_from_thread(
@@ -1181,6 +1186,7 @@ class DevFluxApp(App):
             fresh_client,
             self._config,  # type: ignore[arg-type]
             callback=callback,
+            cancelled=lambda: self._cancel_requested,
         )
 
         # Run pipeline (Lesson 11: arbitrary role list)
@@ -1205,6 +1211,11 @@ class DevFluxApp(App):
             fresh_client.close()
         except Exception:
             pass
+
+        # A cooperative cancellation happens between roles. Do not convert it
+        # into the normal zero-file retry path.
+        if self._cancel_requested:
+            return
 
         # FEATURE: Auto-retry if 0 files generated (max 1 retry)
         if not files and not _is_retry:
@@ -1946,6 +1957,20 @@ class DevFluxApp(App):
     def human_model_error(_exc: Exception) -> str:
         """Never leak endpoints, stack traces or provider details into chat."""
         return "No pude conectar con el modelo. Probá de nuevo en unos segundos."
+
+    def _pipeline_cancelled(self) -> None:
+        """Return to a safe, human-facing state after cooperative cancellation."""
+        self.is_running = False
+        self._retry_pending = False
+        self._last_retry = None
+        self._log_chat("[yellow]Generación cancelada. Los archivos ya creados se conservaron.[/yellow]")
+
+    def action_cancel_pipeline(self) -> None:
+        """Request that the runner stop after the current model response."""
+        if not self.is_running or self._cancel_requested:
+            return
+        self._cancel_requested = True
+        self._log_chat("[yellow]Cancelando cuando termine la etapa actual...[/yellow]")
 
     def action_toggle_diagnostics(self) -> None:
         """Reveal support details only after the explicit Ctrl+D shortcut."""

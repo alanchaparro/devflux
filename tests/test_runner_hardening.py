@@ -52,3 +52,24 @@ def test_pipeline_truncates_large_existing_files_before_prompting(tmp_path) -> N
 
     assert marker not in prompt
     assert "dato no confiable" in system
+
+
+def test_pipeline_stops_before_next_role_when_cancelled(tmp_path) -> None:
+    calls: list[object] = []
+    events: list[tuple[str, str]] = []
+
+    class Client:
+        def chat(self, _messages):
+            calls.append(_messages)
+            return LLMResponse(content="NO_BACKEND", tokens=0, elapsed=0.0)
+
+    runner = PipelineRunner(
+        Client(),
+        DevFluxConfig(),
+        callback=lambda role, status, _data: events.append((role, status)),
+        cancelled=lambda: True,
+    )
+
+    assert runner.run(["backend"], "test", cwd=tmp_path) == {}
+    assert calls == []
+    assert events == [("__pipeline__", "cancelled")]

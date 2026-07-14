@@ -454,10 +454,12 @@ class PipelineRunner:
         client: LLMClient,
         config: DevFluxConfig,
         callback: Callable[[str, str, dict[str, Any] | None], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._callback = callback or (lambda role, status, data: None)
+        self._cancelled = cancelled or (lambda: False)
         self.total_tokens: int = 0
         self.total_elapsed: float = 0.0
         self.files: dict[str, str] = {}
@@ -565,6 +567,12 @@ class PipelineRunner:
         }
 
         for role in roles:
+            if self._cancelled():
+                self._checkpoint(
+                    run_dir, run_id=run_id, roles=roles, completed=completed_roles, status="cancelled"
+                )
+                self._callback("__pipeline__", "cancelled", {"completed_roles": completed_roles})
+                return dict(self.files)
             self._callback(role, "start", None)
 
             # Render prompt for this role
