@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -351,6 +352,15 @@ def human_confirmation(text: str, has_existing_project: bool) -> str:
     return f"Entendí: {verb} {target} según tu pedido: {normalized}."
 
 
+def suggest_project_directory(idea: str, projects_root: Path) -> Path:
+    """Create a readable, filesystem-safe project folder suggestion."""
+    words = re.findall(r"[a-z0-9]+", idea.casefold())
+    while words and words[0] in {"una", "un", "mi", "quiero", "hacer", "crear"}:
+        words.pop(0)
+    slug = "-".join(words[:6]) or "mi-proyecto"
+    return projects_root / slug
+
+
 def project_ready_message(files: list[str], project_dir: Path) -> str:
     """Describe a completed project in terms of the user's next actions."""
     count = len(files)
@@ -570,6 +580,12 @@ class DevFluxApp(App):
         # A vague modification must receive a concrete follow-up before a team runs.
         self.pending_modify_clarification: bool = False
         self._pending_clarification_action: str | None = None
+        self._active_project_dir: Path | None = None
+        self._prepared_project_dir: Path | None = None
+
+    def _project_dir(self) -> Path:
+        """Return the active generated project or the current existing workspace."""
+        return self._active_project_dir or Path.cwd()
 
     def compose(self) -> ComposeResult:
         """Compose the main layout."""
@@ -1116,7 +1132,7 @@ class DevFluxApp(App):
         start_time = time.time()
 
         # Lesson 16: anti-destruction check
-        cwd = Path.cwd()
+        cwd = self._project_dir()
         from ..core.runner import DEVFLUX_SRC_DIR
         if str(DEVFLUX_SRC_DIR) in str(cwd.resolve()):
             self.call_from_thread(
@@ -1312,7 +1328,7 @@ class DevFluxApp(App):
             self._announce_verification()
         self._log_pipeline(f"Completado: {len(files)} archivos, {tokens} tokens, {elapsed:.1f}s")
         if files:
-            self._log_chat(project_ready_message(files, Path.cwd()))
+            self._log_chat(project_ready_message(files, self._project_dir()))
         elif self._last_retry is None:
             self._log_chat("[bold green]Listo.[/bold green]")
 
@@ -1338,7 +1354,7 @@ class DevFluxApp(App):
             return
         file_contents = file_contents or {}
         file_diffs = file_diffs or {}
-        cwd = Path.cwd()
+        cwd = self._project_dir()
 
         for fname in filenames:
             new_content = file_contents.get(fname, "")
@@ -1825,8 +1841,12 @@ class DevFluxApp(App):
         self._confirm_text = text
         self._confirm_intent = IntentType.CODE
         self._confirm_selected = 0
+        if action == "create":
+            self._prepared_project_dir = suggest_project_directory(text, Path.cwd())
+        else:
+            self._prepared_project_dir = None
         self._confirm_options = [
-            ("apply", human_confirmation(text, bool(load_context_files(Path.cwd()))), action)
+            ("apply", human_confirmation(text, bool(load_context_files(self._project_dir()))), action)
         ]
         self._show_confirmation()
 
@@ -1898,6 +1918,9 @@ class DevFluxApp(App):
             return
 
         if action in {"create", "modify", "bugs"}:
+            if action == "create" and self._prepared_project_dir is not None:
+                self._prepared_project_dir.mkdir(parents=True, exist_ok=True)
+                self._active_project_dir = self._prepared_project_dir
             pipeline_text = text
             if action == "modify":
                 pipeline_text = (
@@ -1989,7 +2012,7 @@ class DevFluxApp(App):
 
     def action_open_project(self) -> None:
         """Open the active project folder only when the user explicitly asks."""
-        os.startfile(Path.cwd())
+        os.startfile(self._project_dir())
 
     def action_cancel_pipeline(self) -> None:
         """Request that the runner stop after the current model response."""

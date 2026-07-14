@@ -8,7 +8,12 @@ import pytest
 from devflux.core.config import DevFluxConfig
 from devflux.core.orchestrator import Complexity, ConversationRoute, RouterResult
 from devflux.core.runner import PipelineRunner, is_functional_project_file
-from devflux.tui.app import DevFluxApp, human_confirmation, project_ready_message
+from devflux.tui.app import (
+    DevFluxApp,
+    human_confirmation,
+    project_ready_message,
+    suggest_project_directory,
+)
 
 
 def test_existing_project_visual_change_gets_one_human_confirmation_and_fast_path(tmp_path, monkeypatch) -> None:
@@ -46,6 +51,10 @@ def test_timeout_is_presented_as_human_retry_message() -> None:
     )
 
 
+def test_suggest_project_directory_uses_a_safe_human_slug(tmp_path) -> None:
+    assert suggest_project_directory("Una app para recetas de Sofi!", tmp_path) == tmp_path / "app-para-recetas-de-sofi"
+
+
 def test_project_ready_message_offers_clear_next_steps(tmp_path) -> None:
     message = project_ready_message(["index.html", "styles.css"], tmp_path)
 
@@ -66,6 +75,22 @@ async def test_new_session_starts_in_a_distraction_free_home_view() -> None:
         assert app.query_one("#right-panel").visible is False
         assert app.query_one("#pipeline-log").visible is False
         assert "¿Qué querés crear?" in str(app.query_one("#home-title").render())
+
+
+def test_create_confirmation_uses_the_suggested_project_folder(tmp_path, monkeypatch) -> None:
+    app = DevFluxApp()
+    monkeypatch.chdir(tmp_path)
+    app._show_confirmation = lambda: None  # type: ignore[method-assign]
+    app._orchestrator = SimpleNamespace(
+        select_user_action=lambda _text, _action: (["dev"], Complexity.SIMPLE, ["backend"])
+    )
+    app._start_pipeline = lambda *_args: None  # type: ignore[method-assign]
+
+    app._prepare_confirmation("Una app para recetas", "create")
+    app._handle_confirm_select()
+
+    assert app._active_project_dir == tmp_path / "app-para-recetas"
+    assert app._active_project_dir.exists()
 
 
 def test_cancel_pipeline_requests_a_safe_stop() -> None:
