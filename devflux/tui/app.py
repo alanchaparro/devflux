@@ -350,6 +350,18 @@ def human_confirmation(text: str, has_existing_project: bool) -> str:
     return f"Entendí: {verb} {target} según tu pedido: {normalized}."
 
 
+def project_ready_message(files: list[str], project_dir: Path) -> str:
+    """Describe a completed project in terms of the user's next actions."""
+    count = len(files)
+    noun = "archivo" if count == 1 else "archivos"
+    return (
+        f"[bold green]Tu proyecto está listo.[/bold green]\n\n"
+        f"{count} {noun} creados · Verificación completada\n"
+        f"Carpeta: {project_dir}\n\n"
+        "[cyan]Abrir proyecto[/cyan]  ·  [cyan]Ver código[/cyan]  ·  [cyan]Pedir una mejora[/cyan]"
+    )
+
+
 class MenuWidget(Static):
     """Menu using Static + on_key (Lesson 4: NOT OptionList).
 
@@ -1290,7 +1302,7 @@ class DevFluxApp(App):
             self._announce_verification()
         self._log_pipeline(f"Completado: {len(files)} archivos, {tokens} tokens, {elapsed:.1f}s")
         if files:
-            self._log_chat("[bold green]Listo.[/bold green]")
+            self._log_chat(project_ready_message(files, Path.cwd()))
         elif self._last_retry is None:
             self._log_chat("[bold green]Listo.[/bold green]")
 

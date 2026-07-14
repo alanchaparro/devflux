@@ -8,7 +8,7 @@ import pytest
 from devflux.core.config import DevFluxConfig
 from devflux.core.orchestrator import Complexity, ConversationRoute, RouterResult
 from devflux.core.runner import PipelineRunner, is_functional_project_file
-from devflux.tui.app import DevFluxApp, human_confirmation
+from devflux.tui.app import DevFluxApp, human_confirmation, project_ready_message
 
 
 def test_existing_project_visual_change_gets_one_human_confirmation_and_fast_path(tmp_path, monkeypatch) -> None:
@@ -44,6 +44,16 @@ def test_timeout_is_presented_as_human_retry_message() -> None:
     assert DevFluxApp.human_model_error(TimeoutError("http://model:11434 timed out")) == (
         "No pude conectar con el modelo. Probá de nuevo en unos segundos."
     )
+
+
+def test_project_ready_message_offers_clear_next_steps(tmp_path) -> None:
+    message = project_ready_message(["index.html", "styles.css"], tmp_path)
+
+    assert "Tu proyecto está listo" in message
+    assert "2 archivos creados" in message
+    assert "Abrir proyecto" in message
+    assert "Ver código" in message
+    assert "Pedir una mejora" in message
 
 
 @pytest.mark.asyncio
@@ -155,13 +165,14 @@ async def test_successful_response_uses_human_progress_order_and_clears_retry() 
         app._announce_verification()
         app._pipeline_done(2, 0.1, ["index.html", "style.css"])
 
-    assert messages == [
+    assert messages[:4] == [
         "[yellow]Conectando con el modelo...[/yellow]",
         "[yellow]Preparando actualización...[/yellow]",
         "[yellow]Actualizando index.html y style.css...[/yellow]",
         "[yellow]Verificando cambios...[/yellow]",
-        "[bold green]Listo.[/bold green]",
     ]
+    assert "Tu proyecto está listo" in messages[4]
+    assert "Pedir una mejora" in messages[4]
     assert app._last_retry is None
     assert app._retry_pending is False
 
