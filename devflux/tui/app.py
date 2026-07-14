@@ -40,6 +40,7 @@ FEATURE 2: Intelligent orchestrator
 from __future__ import annotations
 
 import difflib
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -510,6 +511,7 @@ class DevFluxApp(App):
         Binding("escape", "close_menu", "Cerrar", priority=True),
         Binding("ctrl+s", "toggle_menu", "Menú", priority=True),
         Binding("ctrl+d", "toggle_diagnostics", "Diagnóstico", priority=True),
+        Binding("ctrl+o", "open_project", "Abrir proyecto", priority=True),
         Binding("ctrl+c", "cancel_pipeline", "Cancelar", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
         # File navigation in code panel (no priority — only when focused on file list)
@@ -1984,6 +1986,10 @@ class DevFluxApp(App):
         self._retry_pending = False
         self._last_retry = None
         self._log_chat("[yellow]Generación cancelada. Los archivos ya creados se conservaron.[/yellow]")
+
+    def action_open_project(self) -> None:
+        """Open the active project folder only when the user explicitly asks."""
+        os.startfile(Path.cwd())
 
     def action_cancel_pipeline(self) -> None:
         """Request that the runner stop after the current model response."""

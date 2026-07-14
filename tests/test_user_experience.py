@@ -80,6 +80,17 @@ def test_cancel_pipeline_requests_a_safe_stop() -> None:
     assert messages == ["[yellow]Cancelando cuando termine la etapa actual...[/yellow]"]
 
 
+def test_open_project_uses_the_current_workspace(monkeypatch, tmp_path) -> None:
+    app = DevFluxApp()
+    opened: list[Path] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("devflux.tui.app.os.startfile", lambda path: opened.append(Path(path)))
+
+    app.action_open_project()
+
+    assert opened == [tmp_path]
+
+
 def test_successful_pipeline_disarms_empty_enter_retry() -> None:
     app = DevFluxApp()
     app._last_retry = ("cambia el color", ["dev"], Complexity.SIMPLE, ["implementer"])
