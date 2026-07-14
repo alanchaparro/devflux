@@ -54,6 +54,13 @@ DevFluxApp.home #left-panel {
     padding: 1 0 2 0;
 }
 
+#progress-summary {
+    height: auto;
+    border: solid $primary;
+    padding: 1 2;
+    margin: 0 0 1 0;
+}
+
 #chat-log {
     height: 1fr;
     border: solid $panel;

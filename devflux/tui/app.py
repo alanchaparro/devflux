@@ -633,6 +633,7 @@ class DevFluxApp(App):
                     "[dim]Contalo como se lo contarías a alguien. DevFlux se ocupa de lo técnico.[/dim]",
                     id="home-title",
                 ),
+                Static(id="progress-summary"),
                 RichLog(id="chat-log", wrap=True, markup=True),
                 Input(placeholder="Escribi tu idea...", id="chat-input"),
                 MenuWidget(id="menu-widget"),
@@ -666,6 +667,7 @@ class DevFluxApp(App):
         # diagnostics only appear once there is something concrete to inspect.
         self.add_class("home")
         self.query_one("#right-panel").visible = False
+        self.query_one("#progress-summary", Static).visible = False
 
         self._client = LLMClient(self._config, self._creds)
         # REFACTOR: Pass LLM client to orchestrator for intent classification
@@ -687,6 +689,15 @@ class DevFluxApp(App):
         # Hide menu widget initially (Lesson 10: visible, not display)
         menu = self.query_one("#menu-widget", MenuWidget)
         menu.visible = False
+
+    def _set_progress_summary(self, message: str) -> None:
+        """Show one human progress card; diagnostics remain opt-in."""
+        try:
+            summary = self.query_one("#progress-summary", Static)
+            summary.update(message)
+            summary.visible = True
+        except Exception:
+            pass
 
     # --- Wizard handling ---
 
@@ -1063,6 +1074,9 @@ class DevFluxApp(App):
         self._files_progress_announced = False
         self._verification_announced = False
         self._pipeline_count += 1
+        self._set_progress_summary(
+            "[bold]Creando tu proyecto[/bold]\n✓ Entendí tu idea\n● Preparando la estructura\n○ Construyendo la primera versión\n○ Revisando antes de entregártela"
+        )
         self._log_chat("[yellow]Conectando con el modelo...[/yellow]")
         self._run_pipeline(prompt, teams, complexity, roles)
 
@@ -1074,6 +1088,9 @@ class DevFluxApp(App):
         # Reveal code only once the user has something real to inspect.
         self.remove_class("home")
         self.query_one("#right-panel").visible = True
+        self._set_progress_summary(
+            "[bold]Creando tu proyecto[/bold]\n✓ Entendí tu idea\n✓ Preparé la estructura\n● Construyendo la primera versión\n○ Revisando antes de entregártela"
+        )
         self._log_chat("[yellow]Preparando actualización...[/yellow]")
         names = ", ".join(files[:-1]) + (" y " if len(files) > 1 else "") + files[-1]
         self._log_chat(f"[yellow]Actualizando {names}...[/yellow]")
@@ -1083,6 +1100,9 @@ class DevFluxApp(App):
         if self._verification_announced:
             return
         self._verification_announced = True
+        self._set_progress_summary(
+            "[bold]Creando tu proyecto[/bold]\n✓ Entendí tu idea\n✓ Preparé la estructura\n✓ Construí la primera versión\n● Revisando antes de entregártela"
+        )
         self._log_chat("[yellow]Verificando cambios...[/yellow]")
 
     def _pipeline_failed(self, exc: Exception) -> None:

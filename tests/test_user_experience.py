@@ -74,7 +74,20 @@ async def test_new_session_starts_in_a_distraction_free_home_view() -> None:
         assert app.has_class("home")
         assert app.query_one("#right-panel").visible is False
         assert app.query_one("#pipeline-log").visible is False
+        assert app.query_one("#progress-summary").visible is False
         assert "¿Qué querés crear?" in str(app.query_one("#home-title").render())
+
+
+@pytest.mark.asyncio
+async def test_progress_summary_is_human_and_visible_while_creating() -> None:
+    app = DevFluxApp()
+    app._config = DevFluxConfig()
+
+    async with app.run_test():
+        app._set_progress_summary("[bold]Creando tu proyecto[/bold]\n● Preparando la estructura")
+        summary = app.query_one("#progress-summary")
+        assert summary.visible is True
+        assert "Preparando la estructura" in str(summary.render())
 
 
 def test_create_confirmation_uses_the_suggested_project_folder(tmp_path, monkeypatch) -> None:
