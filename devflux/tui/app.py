@@ -361,6 +361,12 @@ def suggest_project_directory(idea: str, projects_root: Path) -> Path:
     return projects_root / slug
 
 
+def inspector_header(filename: str, *, is_diff: bool) -> str:
+    """Name the selected file and tell the user which version is visible."""
+    state = "Cambios respecto a tu versión" if is_diff else "Nuevo o actualizado"
+    return f"Archivo: {filename} · {state}"
+
+
 def project_ready_message(files: list[str], project_dir: Path) -> str:
     """Describe a completed project in terms of the user's next actions."""
     count = len(files)
@@ -1449,6 +1455,7 @@ class DevFluxApp(App):
             return
         display_content, is_diff = self._code_files[fname]
         try:
+            self.query_one("#code-header", Static).update(inspector_header(fname, is_diff=is_diff))
             viewer = self.query_one("#code-viewer", RichLog)
             viewer.clear()
             viewer.write(display_content)

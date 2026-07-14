@@ -11,6 +11,7 @@ from devflux.core.runner import PipelineRunner, is_functional_project_file
 from devflux.tui.app import (
     DevFluxApp,
     human_confirmation,
+    inspector_header,
     project_ready_message,
     suggest_project_directory,
 )
@@ -49,6 +50,11 @@ def test_timeout_is_presented_as_human_retry_message() -> None:
     assert DevFluxApp.human_model_error(TimeoutError("http://model:11434 timed out")) == (
         "No pude conectar con el modelo. Probá de nuevo en unos segundos."
     )
+
+
+def test_inspector_header_explains_file_state() -> None:
+    assert inspector_header("src/app.py", is_diff=False) == "Archivo: src/app.py · Nuevo o actualizado"
+    assert inspector_header("src/app.py", is_diff=True) == "Archivo: src/app.py · Cambios respecto a tu versión"
 
 
 def test_suggest_project_directory_uses_a_safe_human_slug(tmp_path) -> None:
