@@ -75,7 +75,10 @@ async def test_down_enter_selects_local_then_model_without_api_key(isolated_conf
         assert app.query_one("#wizard-selector", MenuWidget)._items[0] == "llama3.2"
 
         await pilot.press("enter")
-        assert app._wizard_step == "done"
+        await pilot.pause()
+        assert app._config is not None
+        assert app._config.provider == "ollama-local"
+        assert app.query("#chat-input")
 
     saved = DevFluxConfig.load()
     assert saved is not None

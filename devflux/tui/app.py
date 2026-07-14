@@ -637,6 +637,12 @@ class DevFluxApp(App):
             self.query_one("#wizard-input", Input).visible = False
             self.query_one("#wizard-selector", MenuWidget).focus()
             return
+        self._initialize_main_ui()
+
+    def _initialize_main_ui(self) -> None:
+        """Initialize the main surface after startup or first-run setup."""
+        if self._config is None:
+            return
 
         # A new user starts with one clear surface: their idea. Code and
         # diagnostics only appear once there is something concrete to inspect.
@@ -839,13 +845,15 @@ class DevFluxApp(App):
             return
         config.model = model
         config.save()
-        self.query_one("#wizard-content", Static).update(
-            f"[bold green]Configurado![/bold green]\n\n"
-            f"Proveedor: {PROVIDERS[config.provider]['label']}\n"
-            f"Modelo: {config.model}\n\nReiniciá DevFlux para empezar."
-        )
-        self.query_one("#wizard-selector", MenuWidget).visible = False
-        self._wizard_step = "done"
+        self._config = config
+        self._wizard_step = "ready"
+        # Recompose in place so first-time setup flows directly into the app.
+        self.run_worker(self._finish_wizard_setup(), exclusive=True)
+
+    async def _finish_wizard_setup(self) -> None:
+        """Swap the setup surface for the main UI without restarting DevFlux."""
+        await self.recompose()
+        self._initialize_main_ui()
 
     def _handle_wizard_model(self, model: str) -> None:
         self._select_wizard_model(model)
