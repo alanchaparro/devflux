@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import difflib
 import os
+import platform
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,6 +94,13 @@ from ..core.context import save_context, load_context_for_prompt, load_context_f
 # Lesson 9: CSS_PATH absolute
 CSS_PATH = str(Path(__file__).parent / "styles.tcss")
 
+if not hasattr(os, "startfile"):
+    def _portable_startfile(path: str | os.PathLike[str]) -> None:
+        opener = "open" if platform.system() == "Darwin" else "xdg-open"
+        subprocess.Popen([opener, str(path)])
+
+    os.startfile = _portable_startfile  # type: ignore[attr-defined]
+
 BANNER = "[bold cyan]DevFlux[/bold cyan] [dim]v1.0[/dim]"
 
 # Product menu: implementation choices are deliberately absent.
@@ -114,7 +123,7 @@ SETTINGS_ITEMS = [
 ]
 
 # FEATURE 1: Theme cycling
-THEMES = ["neon", "dracula", "monokai", "nord", "gruvbox", "tokyo-night"]
+THEMES = ["claro", "noche", "alto-contraste"]
 
 # Lesson 8: ASCII-only spinner frames
 SPINNER_FRAMES = ["[o...]", "[.o..]", "[..o.]", "[...o]"]
@@ -375,7 +384,7 @@ def project_ready_message(files: list[str], project_dir: Path) -> str:
         f"[bold green]Tu proyecto está listo.[/bold green]\n\n"
         f"{count} {noun} creados · Verificación completada\n"
         f"Carpeta: {project_dir}\n\n"
-        "[cyan]Abrir proyecto[/cyan]  ·  [cyan]Ver código[/cyan]  ·  [cyan]Pedir una mejora[/cyan]"
+        "[cyan]Abrir proyecto[/cyan]  ·  [cyan]Ver código[/cyan]  ·  [cyan]Pedir una mejora (Ctrl+R)[/cyan]"
     )
 
 
@@ -454,10 +463,10 @@ class MenuWidget(Static):
 
 
 class FileListWidget(Static):
-    """File list for the code panel — NO TabbedContent, NO dynamic IDs.
+    """Navigable tree for the code inspector.
 
-    Uses j/k or up/down to navigate, Enter to select.
-    Lesson 6: can_focus=True for on_key to work.
+    It keeps one selectable row per file, but renders folders as visual grouping
+    so non-technical users can understand the generated structure.
     """
 
     can_focus = True
@@ -465,25 +474,43 @@ class FileListWidget(Static):
     def __init__(self) -> None:
         super().__init__()
         self._files: list[str] = []
+        self._statuses: dict[str, str] = {}
         self._selected = 0
 
-    def set_files(self, files: list[str]) -> None:
-        """Update the file list. Preserve selection if possible."""
+    def set_files(self, files: list[str], statuses: dict[str, str] | None = None) -> None:
+        """Update the tree. Preserve selection if possible."""
         self._files = files
+        self._statuses = statuses or {}
         if self._selected >= len(files):
             self._selected = max(0, len(files) - 1)
         self.refresh()
 
+    def selected_file(self) -> str | None:
+        if self._files and 0 <= self._selected < len(self._files):
+            return self._files[self._selected]
+        return None
+
     def render(self) -> str:
         if not self._files:
-            return "[dim](sin archivos)[/dim]"
-        lines = ["[bold]Archivos:[/bold]"]
+            return "[dim](sin archivos reales todavía)[/dim]"
+        lines = ["[bold]Archivos del proyecto:[/bold]"]
+        previous_dirs: tuple[str, ...] = ()
         for i, fname in enumerate(self._files):
+            parts = tuple(part for part in fname.split("/") if part)
+            dirs = parts[:-1]
+            filename = parts[-1] if parts else fname
+            for depth, dirname in enumerate(dirs):
+                if len(previous_dirs) <= depth or previous_dirs[depth] != dirname:
+                    lines.append(f"  {'  ' * depth}▾ {dirname}/")
+            previous_dirs = dirs
             marker = ">" if i == self._selected else " "
+            status = self._statuses.get(fname, "Revisado")
+            line = f"{marker} {'  ' * len(dirs)}{filename} · Estado: {status}"
             if i == self._selected:
-                lines.append(f"{marker} [bold cyan]{fname}[/bold cyan]")
+                lines.append(f"[bold cyan]{line}[/bold cyan]")
             else:
-                lines.append(f"{marker} {fname}")
+                lines.append(line)
+        lines.append("[dim]Enter: seleccionar · D: diff/final · C: copiar · O: abrir[/dim]")
         return "\n".join(lines)
 
     def on_key(self, event) -> None:  # type: ignore[override]
@@ -510,6 +537,9 @@ class FileListWidget(Static):
             event.prevent_default()
             event.stop()
         elif key == "enter":
+            app = self.app
+            if hasattr(app, '_show_selected_file'):
+                app._show_selected_file()
             event.prevent_default()
             event.stop()
 
@@ -527,13 +557,18 @@ class DevFluxApp(App):
         Binding("escape", "close_menu", "Cerrar", priority=True),
         Binding("ctrl+s", "toggle_menu", "Menú", priority=True),
         Binding("ctrl+d", "toggle_diagnostics", "Diagnóstico", priority=True),
+        Binding("ctrl+t", "cycle_theme", "Tema", priority=True),
         Binding("ctrl+e", "show_code", "Ver código", priority=True),
         Binding("ctrl+o", "open_project", "Abrir proyecto", priority=True),
+        Binding("ctrl+r", "request_improvement", "Pedir mejora", priority=True),
         Binding("ctrl+c", "cancel_pipeline", "Cancelar", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
         # File navigation in code panel (no priority — only when focused on file list)
         Binding("j", "next_file", "Sig. archivo"),
         Binding("k", "prev_file", "Prev archivo"),
+        Binding("d", "toggle_file_view", "Diff/final"),
+        Binding("c", "copy_file", "Copiar archivo"),
+        Binding("o", "open_selected_file", "Abrir archivo"),
     ]
 
     # Reactive state (NOT using _context — Lesson 2)
@@ -564,6 +599,8 @@ class DevFluxApp(App):
         # BUG 2 DEFINITIVE FIX: NO TabbedContent — use file list + RichLog
         # Store file contents keyed by filename for display
         self._code_files: dict[str, Any] = {}  # fname -> (display_content, is_diff)
+        self._code_file_versions: dict[str, dict[str, Any]] = {}
+        self._code_file_status: dict[str, str] = {}
         self._code_file_order: list[str] = []  # ordered list of filenames
         # FEATURE: Memoria de sesion — track last user input for context saving
         self._last_user_input: str = ""
@@ -903,6 +940,8 @@ class DevFluxApp(App):
         FEATURE 2: Classify intent first, show preview, skip pipeline for questions.
         FEATURE 3: Confirmacion interactiva — muestra opciones antes de ejecutar.
         """
+        if text.strip().isdigit() and self._continue_recent_project(int(text.strip()) - 1):
+            return
         if not text.strip():
             return
         if self.is_running:
@@ -921,7 +960,7 @@ class DevFluxApp(App):
         router_result = self._orchestrator.route_conversation(
             self.conversation_turns,
             self.active_thread,
-            load_context_for_prompt(Path.cwd()),
+            load_context_for_prompt(self._project_dir()),
             text,
         )
         self._apply_conversation_route(text, router_result)
@@ -1308,6 +1347,7 @@ class DevFluxApp(App):
                 tokens=runner.total_tokens,
                 elapsed=elapsed,
                 model=self._config.model if self._config else "unknown",
+                project_dir=str(cwd),
             )
             session.save()
 
@@ -1331,6 +1371,7 @@ class DevFluxApp(App):
             tokens=runner.total_tokens,
             elapsed=elapsed,
             model=self._config.model if self._config else "unknown",
+            project_dir=str(cwd),
         )
         session.save()
 
@@ -1428,15 +1469,24 @@ class DevFluxApp(App):
                     )
                 is_diff = False
 
-            # Store content in dict — NO widget IDs, NO TabPane
+            final_content = display_content if not is_diff else Syntax(new_content, lexer, theme="monokai", line_numbers=True)
             self._code_files[fname] = (display_content, is_diff)
+            self._code_file_versions[fname] = {
+                "final": final_content,
+                "diff": display_content if is_diff else None,
+                "show_diff": is_diff,
+                "plain": new_content,
+                "path": cwd / fname,
+            }
+            self._code_file_status[fname] = "Modificado" if is_diff else "Nuevo"
             if fname not in self._code_file_order:
                 self._code_file_order.append(fname)
+            self._code_file_order.sort()
 
         # Update the file list widget
         try:
             file_list = self.query_one(FileListWidget)
-            file_list.set_files(self._code_file_order)
+            file_list.set_files(self._code_file_order, self._code_file_status)
             # Select the last added file
             if filenames:
                 last_fname = filenames[-1]
@@ -1454,9 +1504,18 @@ class DevFluxApp(App):
         """Display a specific file in the code-viewer RichLog."""
         if fname not in self._code_files:
             return
-        display_content, is_diff = self._code_files[fname]
+        versions = self._code_file_versions.get(fname)
+        if versions:
+            is_diff = bool(versions.get("show_diff") and versions.get("diff") is not None)
+            display_content = versions["diff"] if is_diff else versions["final"]
+        else:
+            display_content, is_diff = self._code_files[fname]
         try:
-            self.query_one("#code-header", Static).update(inspector_header(fname, is_diff=is_diff))
+            status = self._code_file_status.get(fname, "Revisado")
+            self.query_one("#code-header", Static).update(
+                inspector_header(fname, is_diff=is_diff)
+                + f" · Estado: {status} · D alterna diff/final · C copia · O abre"
+            )
             viewer = self.query_one("#code-viewer", RichLog)
             viewer.clear()
             viewer.write(display_content)
@@ -1480,8 +1539,9 @@ class DevFluxApp(App):
         """Show the currently selected file in the file list."""
         try:
             file_list = self.query_one(FileListWidget)
-            if file_list._files and 0 <= file_list._selected < len(file_list._files):
-                self._show_file(file_list._files[file_list._selected])
+            selected = file_list.selected_file()
+            if selected:
+                self._show_file(selected)
         except Exception:
             pass
 
@@ -1506,6 +1566,48 @@ class DevFluxApp(App):
                 self._show_selected_file()
         except Exception:
             pass
+
+    def _selected_code_file(self) -> str | None:
+        try:
+            return self.query_one(FileListWidget).selected_file()
+        except Exception:
+            return None
+
+    def action_toggle_file_view(self) -> None:
+        """Toggle the selected file between final content and diff when available."""
+        fname = self._selected_code_file()
+        if not fname:
+            return
+        versions = self._code_file_versions.get(fname)
+        if not versions or versions.get("diff") is None:
+            self._log_chat("[dim]Este archivo no tiene diff para alternar.[/dim]")
+            return
+        versions["show_diff"] = not bool(versions.get("show_diff"))
+        self._show_file(fname)
+
+    def action_copy_file(self) -> None:
+        """Copy the selected file final content to the clipboard."""
+        fname = self._selected_code_file()
+        versions = self._code_file_versions.get(fname or "")
+        if not fname or not versions:
+            return
+        content = str(versions.get("plain", ""))
+        try:
+            self.copy_to_clipboard(content)
+            self._log_chat(f"[green]Contenido copiado: {fname}[/green]")
+        except Exception:
+            self._log_chat("[yellow]No pude acceder al portapapeles en este entorno.[/yellow]")
+
+    def action_open_selected_file(self) -> None:
+        """Open the selected file with the operating system default app."""
+        fname = self._selected_code_file()
+        if not fname:
+            return
+        target = self._project_dir() / fname
+        if not target.exists():
+            self._log_chat(f"[yellow]No encontré el archivo: {fname}[/yellow]")
+            return
+        os.startfile(target)
 
     def _build_diff(self, old: str, new: str) -> Text:
         """Build a Rich Text with diff highlighting (green=added, red=removed)."""
@@ -1593,7 +1695,7 @@ class DevFluxApp(App):
         if item == "Nuevo proyecto":
             self._log_chat("Contame qué querés crear y preparo una propuesta.")
         elif item == "Continuar proyecto":
-            self._log_chat("Contame qué querés cambiar o revisar del proyecto actual.")
+            self._show_recent_projects()
         elif item == "Ajustes":
             self._open_settings()
         elif item == "Diagnóstico":
@@ -1603,12 +1705,18 @@ class DevFluxApp(App):
 
     # --- Theme handling (FEATURE 1: Temas) ---
 
+    def action_cycle_theme(self) -> None:
+        """Keyboard-first access to the small real theme set."""
+        self._cycle_theme()
+
     def _cycle_theme(self) -> None:
-        """Cycle to next theme in the THEMES list."""
+        """Cycle between the real visual themes exposed by CSS classes."""
+        old_theme = self._current_theme
         self._theme_idx = (self._theme_idx + 1) % len(THEMES)
         self._current_theme = THEMES[self._theme_idx]
-        self._log_chat(f"[bold cyan]Tema: {self._current_theme}[/bold cyan]")
-        self._log_chat(f"[dim]Temas disponibles: {', '.join(THEMES)}[/dim]")
+        self.remove_class(f"theme-{old_theme}")
+        self.add_class(f"theme-{self._current_theme}")
+        self._log_chat(f"[bold cyan]Tema aplicado: {self._current_theme}[/bold cyan]")
 
     # --- Settings handling ---
 
@@ -1838,6 +1946,94 @@ class DevFluxApp(App):
                     pass
                 self._client = LLMClient(self._config, self._creds)
                 self._log_chat(f"[bold green]API key guardada para {provider}[/bold green]")
+
+    def action_request_improvement(self) -> None:
+        """Turn the ready-state next step into a real modification request."""
+        project_dir = self._project_dir()
+        if not load_context_files(project_dir) and not self._code_file_order:
+            self._log_chat("[dim]Primero creá o abrí un proyecto para pedir una mejora.[/dim]")
+            return
+        self._active_project_dir = project_dir
+        self.active_thread = "modify"
+        self._pending_clarification_action = "modify"
+        self.pending_modify_clarification = False
+        chat_input = self.query_one("#chat-input", Input)
+        chat_input.placeholder = "¿Qué querés cambiar de este proyecto?"
+        chat_input.value = ""
+        chat_input.focus()
+        self._log_chat("[bold cyan]¿Qué querés cambiar de este proyecto?[/bold cyan]")
+
+    def _recent_project_cards(self, limit: int = 5) -> list[dict[str, Any]]:
+        """Return usable recent projects backed by the session registry."""
+        cards: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        for session in SessionRecord.list_all():
+            raw_dir = session.get("project_dir") or ""
+            if not raw_dir:
+                continue
+            project_dir = Path(raw_dir).expanduser()
+            if project_dir in seen or not project_dir.exists():
+                continue
+            seen.add(project_dir)
+            files = [name for name in session.get("files", []) if is_functional_project_file(name)]
+            cards.append({
+                "name": project_dir.name or str(project_dir),
+                "project_dir": project_dir,
+                "files": files,
+                "timestamp": str(session.get("timestamp", ""))[:19],
+            })
+            if len(cards) >= limit:
+                break
+        return cards
+
+    def _show_recent_projects(self) -> None:
+        """Show recent projects as user-facing cards, not technical sessions."""
+        cards = self._recent_project_cards()
+        if not cards:
+            self._log_chat("[yellow]No hay proyectos recientes para continuar.[/yellow]")
+            self._log_chat("Contame qué querés crear y preparo una carpeta nueva.")
+            return
+        self._recent_projects = cards
+        self._log_chat("[bold]Proyectos recientes[/bold]")
+        for index, card in enumerate(cards, start=1):
+            count = len(card["files"])
+            noun = "archivo" if count == 1 else "archivos"
+            self._log_chat(
+                f"{index}. [cyan]{card['name']}[/cyan] · {count} {noun} · {card['timestamp']} · "
+                f"Continuar: escribí {index}"
+            )
+        chat_input = self.query_one("#chat-input", Input)
+        chat_input.placeholder = "Elegí un número para continuar o escribí un cambio"
+        chat_input.focus()
+
+    def _continue_recent_project(self, index: int = 0) -> bool:
+        """Restore a recent project's folder and inspector state."""
+        cards = getattr(self, "_recent_projects", [])
+        if not cards or index < 0 or index >= len(cards):
+            return False
+        card = cards[index]
+        project_dir = Path(card["project_dir"])
+        self._active_project_dir = project_dir
+        self.active_thread = "modify"
+        files = [name for name in card["files"] if (project_dir / name).exists()]
+        if files:
+            contents = {}
+            for name in files:
+                try:
+                    contents[name] = (project_dir / name).read_text(encoding="utf-8")
+                except Exception:
+                    continue
+            self._update_code_panel(files, contents)
+            self.action_show_code()
+        else:
+            self.add_class("home")
+            self.query_one("#right-panel").visible = False
+        chat_input = self.query_one("#chat-input", Input)
+        chat_input.placeholder = "¿Qué querés cambiar de este proyecto?"
+        chat_input.value = ""
+        chat_input.focus()
+        self._log_chat(f"[bold green]Continuamos con {project_dir.name}.[/bold green]")
+        return True
 
     def _show_sessions(self) -> None:
         """Show saved sessions."""

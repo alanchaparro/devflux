@@ -2,12 +2,66 @@
 
 DevFlux es una TUI para crear, continuar, revisar y entender proyectos mediante una conversación simple. Escribí lo que necesitás; DevFlux prepara una propuesta clara y vos decidís cuándo aplicarla.
 
+## Requisitos
+
+- Python 3.11 o superior: verificá con `python --version` o `python3 --version`.
+- `pip` disponible: verificá con `python -m pip --version`.
+- Una terminal compatible con aplicaciones TUI.
+- Un proveedor para el modelo: **Ollama Cloud** con API key u **Ollama Local** funcionando en tu equipo.
+
 ## Instalación
+
+### Opción recomendada: pipx
+
+`pipx` instala aplicaciones Python aisladas y deja el comando `devflux` disponible en la terminal.
 
 ```bash
 pipx install devflux
-# o, para desarrollo
-pip install -e .
+```
+
+Si tu sistema no reconoce `pipx`, instalalo primero:
+
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath
+```
+
+Después cerrá y abrí la terminal. Verificá:
+
+```bash
+pipx --version
+```
+
+> En algunas instalaciones el comando de Python es `python3` en lugar de `python`. Si `python` no existe, usá `python3 -m pip ...`.
+
+### Alternativa sin pipx
+
+Si no podés usar `pipx`, instalá DevFlux en un entorno virtual:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install devflux
+devflux
+```
+
+En Windows:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install devflux
+devflux
+```
+
+### Instalación para desarrollo
+
+```bash
+git clone <repo-url>
+cd devflux
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ## Uso
