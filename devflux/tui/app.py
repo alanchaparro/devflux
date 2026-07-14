@@ -596,6 +596,11 @@ class DevFluxApp(App):
             # Left Panel (40%)
             Vertical(
                 Static(BANNER, id="banner"),
+                Static(
+                    "[bold]¿Qué querés crear?[/bold]\n"
+                    "[dim]Contalo como se lo contarías a alguien. DevFlux se ocupa de lo técnico.[/dim]",
+                    id="home-title",
+                ),
                 RichLog(id="chat-log", wrap=True, markup=True),
                 Input(placeholder="Escribi tu idea...", id="chat-input"),
                 MenuWidget(id="menu-widget"),

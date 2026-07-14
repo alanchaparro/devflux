@@ -55,6 +55,7 @@ async def test_new_session_starts_in_a_distraction_free_home_view() -> None:
         assert app.has_class("home")
         assert app.query_one("#right-panel").visible is False
         assert app.query_one("#pipeline-log").visible is False
+        assert "¿Qué querés crear?" in str(app.query_one("#home-title").render())
 
 
 def test_successful_pipeline_disarms_empty_enter_retry() -> None:

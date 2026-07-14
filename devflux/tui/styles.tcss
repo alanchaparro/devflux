@@ -48,6 +48,12 @@ DevFluxApp.home #left-panel {
     text-style: bold;
 }
 
+#home-title {
+    height: auto;
+    text-align: center;
+    padding: 1 0 2 0;
+}
+
 #chat-log {
     height: 1fr;
     border: solid $panel;
