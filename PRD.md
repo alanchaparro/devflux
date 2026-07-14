@@ -154,51 +154,116 @@ El orquestador no pasa todo el repo a cada agente. Prepara paquetes de contexto 
 
 ---
 
-## 6. TUI (Interfaz de Usuario)
+## 6. Experiencia de Usuario — DevFlux Simple
 
-### 6.1 Layout
+### 6.1 Regla central
+
+**Una pantalla, una decisión, una acción obvia.** DevFlux no expone equipos de agentes, proveedores, modelos, tokens, rutas internas ni logs como parte del flujo principal. Esos detalles viven en Diagnóstico y sólo aparecen cuando el usuario los pide.
+
+La TUI es una superficie **Command / Inspect**: el teclado hace todo, pero cada estado tiene una única acción primaria inequívoca.
+
+### 6.2 Estados del producto
+
+| Estado | Lo que ve el usuario | Acción primaria |
+|---|---|---|
+| **Inicio** | Una bienvenida, un campo de idea y proyectos recientes | `Crear proyecto` |
+| **Preparar** | Su idea, nombre/carpeta sugeridos y un plan humano de 3 puntos | `Empezar a crear` |
+| **Crear** | Progreso humano de cuatro pasos y Cancelar | `Ver detalles` opcional |
+| **Listo** | Celebración, ubicación, verificación y tres acciones siguientes | `Abrir proyecto` |
+
+### 6.3 Inicio
 
 ```
-┌──────────────────────┬────────────────────────────────────┐
-│ PANEL IZQUIERDO (40%)│ PANEL DERECHO (60%)                │
-│                      │                                    │
-│ Banner DevFlux       │ [Tabs: index.html | style.css | …]│
-│                      │                                    │
-│ Chat / Log:          │ Código con syntax highlighting:    │
-│ "Voy a crear tu      │                                    │
-│  proyecto..."        │  1| <!DOCTYPE html>                │
-│                      │  2| <html lang="es">               │
-│ ▶ analista      ✅   │  3| <head>                         │
-│ ▶ arquitecto    ✅   │  4|   <meta charset="UTF-8">       │
-│ ▶ frontend      🔄   │  5|   <title>Recetas</title>       │
-│                      │  ...                               │
-│                      │                                    │
-│ Escribí tu idea... █ │                                    │
-├──────────────────────┴────────────────────────────────────┤
-│ Modelo: deepseek-v4-pro | Tokens: 8,234 | 1m 45s          │
-└───────────────────────────────────────────────────────────┘
+                         DevFlux
+                  De una idea a un proyecto.
+
+              ¿Qué querés crear hoy?
+
+     [ Una app para organizar mis recetas                  ]
+
+     Ej: “Una web simple para mostrar mi cafetería”
+
+                                      [ Crear proyecto → ]
+
+     Recientes
+     • Recetas de Sofi          Continuar
+     • Landing de cafetería     Continuar
 ```
 
-### 6.2 Componentes
+No se muestran paneles de código, pipeline, modelo ni menús técnicos antes de que el usuario tenga un proyecto.
 
-| Componente | Descripción |
-|------------|-------------|
-| Banner | ASCII art "DEVFLUX" + versión |
-| Chat input | Campo de texto para escribir pedidos |
-| Pipeline log | Lista de roles ejecutándose en tiempo real |
-| Code panel | Pestañas con archivos generados + syntax highlighting |
-| Diff panel | Cuando se modifica un archivo: rojo/verde |
-| Status bar | Modelo, tokens, tiempo, estado |
+### 6.4 Preparar
 
-### 6.3 Flujo del usuario
+Después de una idea, DevFlux presenta una confirmación humana, no una clasificación interna:
 
-1. Abre `devflux` → TUI pantalla completa
-2. Escribe: "Quiero una web de recetas de cocina con buscador"
-3. Presiona Enter
-4. Confirma una vez y recibe progreso humano sin roles, tiempos ni tokens internos
-5. Ve el código generándose en el panel derecho
-6. Al terminar: resumen + "Tu proyecto está en ~/recetas/"
-7. Puede pedir modificaciones, abrir en navegador, o salir
+```
+Crear proyecto
+
+“Una app para organizar mis recetas”
+
+Se va a crear:
+• Una interfaz para guardar y buscar recetas
+• Una estructura simple para crecer después
+• Una primera versión que puedas abrir y usar
+
+Carpeta: ~/DevFlux/recetas
+
+[ Cambiar carpeta ]                         [ Empezar a crear → ]
+```
+
+Si el pedido es una pregunta, la acción primaria es `Responder ahora`. Si es ambiguo, DevFlux pregunta una sola aclaración en lenguaje natural.
+
+### 6.5 Crear
+
+```
+Creando “Recetas”
+
+✓ Entendí tu idea
+✓ Preparé la estructura
+● Estoy construyendo la primera versión
+○ Voy a revisarla antes de entregártela
+
+[ Ver detalles técnicos ]                         [ Cancelar ]
+```
+
+Los detalles técnicos pueden mostrar logs, modelo, archivos, diffs y diagnósticos, pero están ocultos por defecto. Cancelar conserva los archivos ya escritos y detiene las etapas restantes de forma segura.
+
+### 6.6 Listo
+
+```
+🎉 Tu proyecto está listo
+
+12 archivos creados · Verificación completada
+Carpeta: ~/DevFlux/recetas
+
+[ Abrir proyecto ]   [ Ver código ]   [ Pedir una mejora ]
+```
+
+`Pedir una mejora` devuelve al chat con el contexto del proyecto activo. El usuario nunca tiene que recordar comandos ni rutas.
+
+### 6.7 Código y detalles
+
+El código aparece sólo después de existir un proyecto. El inspector muestra:
+- ruta del archivo y estado (`nuevo`, `modificado`, `revisado`);
+- árbol de archivos navegable;
+- alternancia entre versión final y diff;
+- acciones `Copiar`, `Abrir carpeta` y `Volver al proyecto`.
+
+### 6.8 Configuración y diagnóstico
+
+- Configuración es una pantalla separada, con selector de provider/modelo, campo de clave enmascarado y `Probar conexión`.
+- Diagnóstico es opt-in (`Ctrl+D`); allí viven tokens, modelo, errores y logs completos.
+- Temas deben cambiar visualmente de verdad o no se ofrecen.
+- Todos los flujos se navegan con Tab, flechas, Enter y Escape; los atajos visibles nunca son requisito para entender la interfaz.
+
+### 6.9 Criterios de experiencia
+
+1. Un usuario nuevo puede llegar a `Crear proyecto` sin abrir un menú.
+2. La pantalla principal no contiene vocabulario técnico.
+3. Cada estado tiene una única acción visual primaria.
+4. Ningún mensaje de error muestra una excepción cruda sin una acción humana (`Reintentar`, `Volver` o `Ver detalles`).
+5. El progreso evita nombres de agentes y métricas internas.
+6. El final siempre ofrece una siguiente acción clara.
 
 ---
 
