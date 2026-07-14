@@ -1,95 +1,243 @@
 # DevFlux
 
-DevFlux es una TUI para crear, continuar, revisar y entender proyectos mediante una conversación simple. Escribí lo que necesitás; DevFlux prepara una propuesta clara y vos decidís cuándo aplicarla.
+DevFlux es una aplicación de terminal (TUI) para **crear, continuar, revisar y mejorar proyectos de software conversando en lenguaje natural**. La persona usuaria describe qué necesita; DevFlux prepara una confirmación clara, ejecuta un flujo interno de agentes y entrega archivos funcionales en una carpeta de proyecto.
+
+El objetivo del producto es que el flujo principal se sienta así:
+
+```text
+Inicio → Preparar → Crear → Listo
+```
+
+Sin pedir que la persona entienda roles internos, tokens, prompts, rutas técnicas o detalles del proveedor.
+
+## Qué puede hacer
+
+- Crear un proyecto nuevo a partir de una idea escrita en chat.
+- Continuar un proyecto reciente sin buscar carpetas manualmente.
+- Pedir mejoras sobre el proyecto activo sin perder contexto.
+- Responder preguntas sobre el proyecto sin iniciar una generación de archivos.
+- Mostrar un inspector de archivos con árbol, estado por archivo y vista de diff/final.
+- Abrir la carpeta activa, copiar archivos generados o abrir un archivo puntual desde la TUI.
+- Mantener diagnósticos y entregas internas fuera del proyecto generado.
+
+## Para quién es
+
+DevFlux está pensado para personas que quieren avanzar desde una idea hasta un proyecto funcional con una experiencia guiada. También puede servir a equipos técnicos que quieran prototipar o revisar cambios, pero la interfaz está diseñada para no exponer decisiones internas salvo que se abra Diagnóstico.
+
+## Requisitos
+
+- Python 3.11 o superior.
+- Una terminal compatible con aplicaciones TUI.
+- Uno de estos proveedores configurables desde el asistente inicial:
+  - **Ollama Cloud**: requiere API key.
+  - **Ollama Local**: requiere tener tu instancia/modelo local disponible.
 
 ## Instalación
 
+### Instalación recomendada con pipx
+
 ```bash
 pipx install devflux
-# o, para desarrollo
-pip install -e .
 ```
 
-## Uso
+### Instalación para desarrollo local
+
+```bash
+git clone <repo-url>
+cd devflux
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .[test]
+```
+
+> En Windows, activá el entorno con `.venv\\Scripts\\activate`.
+
+## Primer inicio
+
+Ejecutá:
 
 ```bash
 devflux
 ```
 
-En el primer inicio, el asistente muestra un selector navegable para elegir entre **Ollama Cloud** y **Ollama Local**. Usá **↑/↓** para recorrer las opciones, **Enter** para confirmar y **Esc** para cancelar la selección.
+En el primer inicio, DevFlux muestra un asistente navegable:
 
-- Con **Ollama Cloud**, pegá la API key cuando se solicite; es el único dato que se escribe manualmente. Después elegí el modelo con el selector.
-- Con **Ollama Local**, elegí directamente el modelo con el selector; no se solicita API key.
-- **Ajustes** abre un editor a pantalla completa: el proveedor y modelo actuales quedan preseleccionados en listas navegables y desplazables. Usá **Tab** para cambiar de sección, **↑/↓** para recorrer las listas y **Enter** para elegir.
-- En **Ajustes**, **Guardar cambios** aplica proveedor y modelo y confirma `Ajustes guardados.`; **Cancelar** o **Esc** cierra el editor sin cambiar la configuración. Para Cloud, el campo secreto solo sirve para reemplazar la API key: la existente nunca se revela.
+1. Elegí **Ollama Cloud** u **Ollama Local** con `↑/↓`.
+2. Confirmá con `Enter`.
+3. Si elegiste Cloud, pegá la API key cuando se solicite.
+4. Elegí el modelo con el selector.
+5. DevFlux entra directamente a la pantalla principal.
 
-La API key se guarda de forma privada y DevFlux no la muestra en la interfaz.
+La API key se guarda de forma privada y nunca se muestra en la interfaz, diagnósticos o logs del chat.
 
-## Experiencia de uso
+## Uso básico
 
-El menú principal contiene solo:
+### Crear un proyecto
 
-- **Nuevo proyecto**
-- **Continuar proyecto**
-- **Ajustes**
-- **Diagnóstico**
+1. Abrí DevFlux con `devflux`.
+2. Escribí tu idea, por ejemplo:
 
-También podés escribir directamente en el chat para crear, modificar, corregir un problema o hacer una pregunta. Las preguntas se responden como conversación y no inician una ejecución de archivos.
+   ```text
+   Quiero una web simple para registrar recetas familiares
+   ```
 
-Cuando DevFlux entiende un cambio, muestra una única confirmación en lenguaje claro:
+3. DevFlux propone una confirmación en lenguaje claro y muestra la carpeta donde creará el proyecto.
+4. Presioná `Enter` para aplicar o `Esc` para cambiar el pedido.
+5. Al finalizar, DevFlux muestra la carpeta, los archivos creados y los próximos pasos.
+
+### Continuar un proyecto
+
+Desde el menú principal elegí **Continuar proyecto**. DevFlux muestra proyectos recientes como tarjetas con:
+
+- Nombre del proyecto.
+- Cantidad de archivos funcionales.
+- Fecha de la última sesión.
+- Acción para continuar.
+
+Al continuar, se restaura la carpeta activa y, si hay archivos, se muestra el inspector.
+
+### Pedir una mejora
+
+Cuando un proyecto está listo o activo, usá **Ctrl+R** para pedir una mejora. DevFlux vuelve al input principal, conserva la carpeta activa y pregunta:
 
 ```text
-Entendí: actualizaré el proyecto actual según tu pedido: ...
-[Enter] Aplicar · [Esc] Cambiar pedido
+¿Qué querés cambiar de este proyecto?
 ```
 
-- **Enter** aplica el cambio confirmado.
-- **Esc** vuelve al chat para cambiar el pedido.
-- Al ejecutar un cambio, DevFlux muestra primero `Conectando con el modelo...`. Solo después de recibir archivos reales informa cuáles actualizará, luego muestra `Verificando cambios...` y termina con `Listo.`.
-- Si el modelo no está disponible, DevFlux explica el problema sin detalles técnicos y muestra `> [Enter] Reintentar    [Esc] Cancelar`. **Enter** relanza una sola vez el último pedido fallido; **Esc** lo descarta y devuelve el foco al chat. Al terminar correctamente, ese reintento queda desarmado.
-- **Ctrl+D** abre el panel de **Diagnóstico** para soporte. Ahí se consultan los detalles técnicos; el chat normal no muestra providers, modelos, URLs, tokens, roles internos, reintentos ni stack traces.
+El siguiente pedido se aplica como modificación del proyecto activo, no como un proyecto nuevo.
 
-Cada creación o modificación confirmada recorre internamente el equipo-dev completo, en este orden: **analista → arquitecto → planificador → backend → frontend → QA → reviewer → integrador**. DevFlux usa un único proveedor/modelo y cambia el prompt en cada etapa. Es una garantía deliberada de calidad, aunque implica más tiempo y costo que una implementación directa; la interfaz sigue siendo simple y no expone roles, planificación ni arquitectura como decisiones de la persona usuaria. Los pedidos que son preguntas se responden en el chat sin ejecutar roles, y los bugs explícitos usan equipo-bugs.
+### Hacer preguntas
 
-## Archivos y panel derecho
+También podés escribir preguntas como:
 
-El panel derecho muestra los archivos funcionales creados o modificados y sus diferencias. DevFlux filtra documentos e insumos internos como `PRD.md`, `architecture.md`, `plan.md`, `plan.yaml`, `plan.yml`, `main.md`, `output.html`, Markdown y diagramas Mermaid: no los escribe ni los muestra como resultado del pedido.
+```text
+¿Qué archivos tiene este proyecto y para qué sirve cada uno?
+```
 
-Los diagnósticos, respuestas crudas y checkpoints por rol (`state.json`) no se guardan dentro del proyecto: se aíslan en `~/.devflux/runs/<run-id>/`. El chat normal no expone esos detalles internos.
+Las preguntas se responden como conversación y no ejecutan el pipeline de escritura.
 
-## Desarrollo y validación
+## Menú principal
+
+El menú principal se mantiene intencionalmente pequeño:
+
+- **Nuevo proyecto**: iniciar una creación guiada.
+- **Continuar proyecto**: reabrir un proyecto reciente.
+- **Ajustes**: cambiar proveedor, modelo o API key.
+- **Diagnóstico**: ver detalles técnicos solo cuando sean necesarios para soporte.
+
+## Atajos útiles
+
+| Atajo | Acción |
+| --- | --- |
+| `Enter` | Enviar mensaje o aplicar una confirmación activa. |
+| `Esc` | Cancelar menú/confirmación o volver al input. |
+| `Ctrl+S` | Abrir/cerrar menú. |
+| `Ctrl+D` | Mostrar/ocultar Diagnóstico. |
+| `Ctrl+E` | Mostrar el inspector de código. |
+| `Ctrl+O` | Abrir la carpeta del proyecto activo. |
+| `Ctrl+R` | Pedir una mejora sobre el proyecto activo. |
+| `Ctrl+T` | Cambiar tema visual. |
+| `Ctrl+C` | Solicitar cancelación segura de la generación en curso. |
+
+En el inspector de código:
+
+| Tecla | Acción |
+| --- | --- |
+| `j` / `↓` | Siguiente archivo. |
+| `k` / `↑` | Archivo anterior. |
+| `d` | Alternar entre diff y resultado final cuando exista diff. |
+| `c` | Copiar el contenido del archivo seleccionado. |
+| `o` | Abrir el archivo seleccionado con la aplicación del sistema. |
+
+## Ajustes y proveedores
+
+**Ajustes** abre una pantalla completa con listas navegables:
+
+- `Tab` cambia de sección.
+- `↑/↓` navega opciones.
+- `Enter` selecciona.
+- **Guardar cambios** persiste proveedor/modelo/API key nueva.
+- **Cancelar** o `Esc` descarta el borrador.
+
+Para **Ollama Cloud**, el campo secreto sirve únicamente para reemplazar una API key. La clave existente nunca se precarga ni se revela. Para **Ollama Local**, no se solicita API key.
+
+## Cómo trabaja internamente
+
+Cada creación o modificación confirmada recorre internamente el equipo-dev completo:
+
+```text
+analista → arquitecto → planificador → backend → frontend → QA → reviewer → integrador
+```
+
+La interfaz no muestra esos roles como decisiones de usuario. Esta arquitectura prioriza calidad y revisión, aunque puede tardar más que una generación directa.
+
+Los bugs explícitos usan el flujo de equipo-bugs. Las preguntas se responden en el chat sin crear ni modificar archivos.
+
+## Archivos generados e inspector
+
+DevFlux muestra solo archivos funcionales del proyecto. El inspector permite:
+
+- Navegar carpetas y archivos como árbol.
+- Ver estado por archivo: `Nuevo`, `Modificado` o `Revisado`.
+- Alternar entre diff y resultado final.
+- Copiar contenido.
+- Abrir archivos o la carpeta activa.
+
+DevFlux filtra artefactos internos como `PRD.md`, `architecture.md`, `plan.md`, `plan.yaml`, `plan.yml`, `main.md`, `output.html`, Markdown y diagramas Mermaid. Esos documentos no se escriben ni se muestran como resultado funcional.
+
+## Privacidad y archivos internos
+
+Los diagnósticos, respuestas crudas y checkpoints por rol (`state.json`) no se guardan dentro del proyecto generado. Se aíslan en:
+
+```text
+~/.devflux/runs/<run-id>/
+```
+
+El chat normal no expone URLs internas, tokens, stack traces, nombres de roles, prompts ni API keys.
+
+## Desarrollo
+
+Instalación de desarrollo:
 
 ```bash
-python3 -m pytest -q
-python3 -m compileall -q devflux
-python3 -m build
+python -m pip install -e .[test]
 ```
 
-## Stack
+Validaciones recomendadas antes de abrir un cambio:
 
-- Python 3.11+
-- Textual (TUI)
-- httpx (cliente HTTP)
-- Jinja2 (plantillas de prompts)
-- PyYAML (configuración)
+```bash
+python -m pytest -q
+python -m compileall -q devflux
+python -m build
+```
 
-## Arquitectura
+## Estructura del proyecto
 
 ```text
 devflux/
-├── main.py              # Entrypoint + wizard
+├── main.py              # Entrypoint y asistente inicial
 ├── core/
-│   ├── config.py        # DevFluxConfig
-│   ├── client.py        # Cliente LLM compatible con OpenAI
-│   ├── context.py       # Inventario y contexto seguro del proyecto
-│   ├── orchestrator.py  # Enrutamiento conversacional y equipo-dev de 8 roles
-│   ├── runner.py        # Checkpoints aislados y escritura segura del integrador
-│   └── sessions.py      # Registro de sesiones
+│   ├── config.py        # Configuración persistente
+│   ├── credentials.py   # Almacenamiento privado de credenciales
+│   ├── client.py        # Cliente LLM compatible con APIs estilo OpenAI
+│   ├── context.py       # Inventario seguro y contexto del proyecto
+│   ├── orchestrator.py  # Enrutamiento conversacional y selección de flujo
+│   ├── runner.py        # Ejecución de roles y escritura segura de archivos
+│   └── sessions.py      # Registro de sesiones y proyectos recientes
 ├── tui/
-│   ├── app.py           # Chat, confirmación y diagnóstico
-│   └── styles.tcss      # Estilos
+│   ├── app.py           # Interfaz Textual principal
+│   └── styles.tcss      # Estilos y temas
 ├── prompts/             # Plantillas Jinja2 por equipo/rol
 └── tests/               # Pruebas de lógica, UX y endurecimiento
 ```
 
-Para el contrato de mantenimiento destinado a agentes, consultá [`docs/agents/contextual-confirmation.md`](docs/agents/contextual-confirmation.md).
+## Documentación adicional
+
+- [`CHANGELOG.md`](CHANGELOG.md): cambios notables por versión.
+- [`PENDIENTES.md`](PENDIENTES.md): estado del rediseño de producto y criterios de cierre.
+- [`PRD.md`](PRD.md): definición histórica de producto.
+- [`docs/agents/contextual-confirmation.md`](docs/agents/contextual-confirmation.md): contrato de mantenimiento para agentes.
+
+## Estado del rediseño
+
+El rediseño guiado está documentado como completo en `PENDIENTES.md`: creación, preparación, inspector, mejoras, proyectos recientes, ajustes/temas y validación final.

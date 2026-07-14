@@ -10,6 +10,7 @@ from devflux.core.orchestrator import Complexity, ConversationRoute, RouterResul
 from devflux.core.runner import PipelineRunner, is_functional_project_file
 from devflux.tui.app import (
     DevFluxApp,
+    FileListWidget,
     human_confirmation,
     inspector_header,
     project_ready_message,
@@ -57,6 +58,60 @@ def test_inspector_header_explains_file_state() -> None:
     assert inspector_header("src/app.py", is_diff=True) == "Archivo: src/app.py · Cambios respecto a tu versión"
 
 
+def test_file_list_renders_tree_statuses_and_safe_actions() -> None:
+    widget = FileListWidget()
+    widget.set_files(
+        ["src/app.py", "src/views/home.py", "README.txt"],
+        {"src/app.py": "Modificado", "src/views/home.py": "Nuevo", "README.txt": "Revisado"},
+    )
+
+    rendered = str(widget.render())
+
+    assert "▾ src/" in rendered
+    assert "▾ views/" in rendered
+    assert "app.py · Estado: Modificado" in rendered
+    assert "home.py · Estado: Nuevo" in rendered
+    assert "README.txt · Estado: Revisado" in rendered
+    assert "D: diff/final" in rendered
+    assert "C: copiar" in rendered
+    assert "O: abrir" in rendered
+
+
+def test_toggle_file_view_switches_between_diff_and_final() -> None:
+    app = DevFluxApp()
+    app._code_file_versions = {
+        "src/app.py": {
+            "final": "FINAL",
+            "diff": "DIFF",
+            "show_diff": True,
+            "plain": "print('hola')",
+        }
+    }
+    shown: list[str] = []
+    app._selected_code_file = lambda: "src/app.py"  # type: ignore[method-assign]
+    app._show_file = shown.append  # type: ignore[method-assign]
+
+    app.action_toggle_file_view()
+
+    assert app._code_file_versions["src/app.py"]["show_diff"] is False
+    assert shown == ["src/app.py"]
+
+
+def test_copy_file_uses_final_plain_content() -> None:
+    app = DevFluxApp()
+    app._code_file_versions = {"index.html": {"plain": "<main>Hola</main>"}}
+    copied: list[str] = []
+    messages: list[str] = []
+    app._selected_code_file = lambda: "index.html"  # type: ignore[method-assign]
+    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    app._log_chat = messages.append  # type: ignore[method-assign]
+
+    app.action_copy_file()
+
+    assert copied == ["<main>Hola</main>"]
+    assert "Contenido copiado" in messages[0]
+
+
 def test_show_code_reveals_the_inspector_when_files_exist() -> None:
     app = DevFluxApp()
     app._code_files = {"index.html": ("<main>Hola</main>", False)}
@@ -82,6 +137,7 @@ def test_project_ready_message_offers_clear_next_steps(tmp_path) -> None:
     assert "Abrir proyecto" in message
     assert "Ver código" in message
     assert "Pedir una mejora" in message
+    assert "Ctrl+R" in message
 
 
 @pytest.mark.asyncio
@@ -293,3 +349,58 @@ def test_runner_never_writes_internal_documentation(tmp_path: Path) -> None:
 
     assert files == {}
     assert not (tmp_path / "PRD.md").exists()
+
+
+def test_request_improvement_focuses_input_and_keeps_active_project(tmp_path) -> None:
+    (tmp_path / "index.html").write_text("<main>Hola</main>", encoding="utf-8")
+    app = DevFluxApp()
+    app._active_project_dir = tmp_path
+    messages: list[str] = []
+    chat_input = SimpleNamespace(value="texto anterior", placeholder="", focus=lambda: messages.append("focused"))
+    app.query_one = lambda *_args: chat_input  # type: ignore[method-assign]
+    app._log_chat = messages.append  # type: ignore[method-assign]
+
+    app.action_request_improvement()
+
+    assert app._active_project_dir == tmp_path
+    assert app.active_thread == "modify"
+    assert chat_input.placeholder == "¿Qué querés cambiar de este proyecto?"
+    assert chat_input.value == ""
+    assert "focused" in messages
+
+
+def test_recent_project_continue_restores_folder_and_inspector(tmp_path) -> None:
+    project = tmp_path / "recetas"
+    project.mkdir()
+    (project / "index.html").write_text("<main>Recetas</main>", encoding="utf-8")
+    app = DevFluxApp()
+    app._recent_projects = [{"name": "recetas", "project_dir": project, "files": ["index.html"], "timestamp": "2026-07-14T00:00"}]
+    calls: list[object] = []
+    chat_input = SimpleNamespace(value="1", placeholder="", focus=lambda: calls.append("focused"))
+    app.query_one = lambda *_args, **_kwargs: chat_input  # type: ignore[method-assign]
+    app._update_code_panel = lambda files, contents: calls.append((files, contents))  # type: ignore[method-assign]
+    app.action_show_code = lambda: calls.append("show_code")  # type: ignore[method-assign]
+    app._log_chat = calls.append  # type: ignore[method-assign]
+
+    assert app._continue_recent_project(0) is True
+
+    assert app._active_project_dir == project
+    assert app.active_thread == "modify"
+    assert (["index.html"], {"index.html": "<main>Recetas</main>"}) in calls
+    assert "show_code" in calls
+    assert chat_input.placeholder == "¿Qué querés cambiar de este proyecto?"
+
+
+def test_theme_cycle_applies_real_css_class() -> None:
+    app = DevFluxApp()
+    classes: list[tuple[str, str]] = []
+    messages: list[str] = []
+    app.remove_class = lambda name: classes.append(("remove", name))  # type: ignore[method-assign]
+    app.add_class = lambda name: classes.append(("add", name))  # type: ignore[method-assign]
+    app._log_chat = messages.append  # type: ignore[method-assign]
+
+    app.action_cycle_theme()
+
+    assert ("remove", "theme-claro") in classes
+    assert ("add", "theme-noche") in classes
+    assert "Tema aplicado" in messages[0]

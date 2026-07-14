@@ -23,6 +23,7 @@ class SessionRecord:
         tokens: int = 0,
         elapsed: float = 0.0,
         model: str = "",
+        project_dir: str = "",
     ) -> None:
         self.timestamp = datetime.now().isoformat()
         self.user_input = user_input
@@ -33,6 +34,7 @@ class SessionRecord:
         self.tokens = tokens
         self.elapsed = elapsed
         self.model = model
+        self.project_dir = project_dir
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +47,7 @@ class SessionRecord:
             "tokens": self.tokens,
             "elapsed": self.elapsed,
             "model": self.model,
+            "project_dir": self.project_dir,
         }
 
     @classmethod
@@ -58,6 +61,7 @@ class SessionRecord:
             tokens=data.get("tokens", 0),
             elapsed=data.get("elapsed", 0.0),
             model=data.get("model", ""),
+            project_dir=data.get("project_dir", ""),
         )
         rec.timestamp = data.get("timestamp", rec.timestamp)
         return rec
@@ -108,5 +112,6 @@ class SessionRecord:
             f"  Complejidad: {self.complexity}\n"
             f"  Roles: {len(self.roles)} ejecutados\n"
             f"  Archivos: {files_str}\n"
+            f"  Carpeta: {self.project_dir or '(no registrada)'}\n"
             f"  Tokens: {self.tokens} | Tiempo: {self.elapsed:.1f}s | Modelo: {self.model}"
         )
