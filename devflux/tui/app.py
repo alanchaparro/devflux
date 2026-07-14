@@ -1853,7 +1853,12 @@ class DevFluxApp(App):
     def _show_confirmation(self) -> None:
         """Present one friendly action instead of an implementation selector."""
         self._log_chat(f"[bold green]DevFlux:[/bold green] {self._confirm_options[0][1]}")
-        self._log_chat("[bold cyan][Enter] Aplicar[/bold cyan]  ·  [dim][Esc] Cambiar pedido[/dim]")
+        if self._prepared_project_dir is not None:
+            self._log_chat(f"[dim]Carpeta: {self._prepared_project_dir}[/dim]")
+            primary_action = "Crear proyecto"
+        else:
+            primary_action = "Aplicar cambio"
+        self._log_chat(f"[bold cyan][Enter] {primary_action}[/bold cyan]  ·  [dim][Esc] Cambiar pedido[/dim]")
         try:
             self.query_one("#chat-input", Input).focus()
         except Exception:

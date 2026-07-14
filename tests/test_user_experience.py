@@ -93,6 +93,19 @@ def test_create_confirmation_uses_the_suggested_project_folder(tmp_path, monkeyp
     assert app._active_project_dir.exists()
 
 
+def test_create_confirmation_mentions_the_project_folder(tmp_path) -> None:
+    app = DevFluxApp()
+    messages: list[str] = []
+    app._prepared_project_dir = tmp_path / "recetas"
+    app._confirm_options = [("apply", "Entendí tu idea.", "create")]
+    app._log_chat = messages.append  # type: ignore[method-assign]
+    app.query_one = lambda *_args: SimpleNamespace(focus=lambda: None)  # type: ignore[method-assign]
+
+    app._show_confirmation()
+
+    assert any("Carpeta" in message and "recetas" in message for message in messages)
+
+
 def test_cancel_pipeline_requests_a_safe_stop() -> None:
     app = DevFluxApp()
     messages: list[str] = []
