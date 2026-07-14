@@ -527,6 +527,7 @@ class DevFluxApp(App):
         Binding("escape", "close_menu", "Cerrar", priority=True),
         Binding("ctrl+s", "toggle_menu", "Menú", priority=True),
         Binding("ctrl+d", "toggle_diagnostics", "Diagnóstico", priority=True),
+        Binding("ctrl+e", "show_code", "Ver código", priority=True),
         Binding("ctrl+o", "open_project", "Abrir proyecto", priority=True),
         Binding("ctrl+c", "cancel_pipeline", "Cancelar", priority=True),
         Binding("ctrl+q", "quit", "Salir", priority=True),
@@ -2041,6 +2042,17 @@ class DevFluxApp(App):
         self._retry_pending = False
         self._last_retry = None
         self._log_chat("[yellow]Generación cancelada. Los archivos ya creados se conservaron.[/yellow]")
+
+    def action_show_code(self) -> None:
+        """Reveal and focus the code inspector when a project has files."""
+        if not self._code_file_order:
+            self._log_chat("[dim]Todavía no hay código para mostrar.[/dim]")
+            return
+        self.remove_class("home")
+        panel = self.query_one("#right-panel")
+        panel.visible = True
+        self.query_one(FileListWidget).focus()
+        self._show_selected_file()
 
     def action_open_project(self) -> None:
         """Open the active project folder only when the user explicitly asks."""

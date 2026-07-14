@@ -57,6 +57,19 @@ def test_inspector_header_explains_file_state() -> None:
     assert inspector_header("src/app.py", is_diff=True) == "Archivo: src/app.py · Cambios respecto a tu versión"
 
 
+def test_show_code_reveals_the_inspector_when_files_exist() -> None:
+    app = DevFluxApp()
+    app._code_files = {"index.html": ("<main>Hola</main>", False)}
+    app._code_file_order = ["index.html"]
+    calls: list[str] = []
+    app._show_selected_file = lambda: calls.append("shown")  # type: ignore[method-assign]
+    app.query_one = lambda *_args: SimpleNamespace(visible=False, focus=lambda: calls.append("focused"))  # type: ignore[method-assign]
+
+    app.action_show_code()
+
+    assert calls == ["focused", "shown"]
+
+
 def test_suggest_project_directory_uses_a_safe_human_slug(tmp_path) -> None:
     assert suggest_project_directory("Una app para recetas de Sofi!", tmp_path) == tmp_path / "app-para-recetas-de-sofi"
 
