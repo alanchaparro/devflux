@@ -239,3 +239,24 @@ SettingsScreen {
 #settings-actions Button {
     margin-left: 1;
 }
+/* Real theme variants exposed from Ajustes/Temas. */
+DevFluxApp.theme-claro #left-panel,
+DevFluxApp.theme-claro #right-panel {
+    background: $surface-lighten-1;
+    border: solid $primary;
+}
+
+DevFluxApp.theme-noche #left-panel,
+DevFluxApp.theme-noche #right-panel {
+    background: $surface-darken-2;
+    border: solid $accent;
+}
+
+DevFluxApp.theme-alto-contraste #left-panel,
+DevFluxApp.theme-alto-contraste #right-panel,
+DevFluxApp.theme-alto-contraste #chat-input,
+DevFluxApp.theme-alto-contraste FileListWidget,
+DevFluxApp.theme-alto-contraste #code-viewer {
+    border: heavy $warning;
+    background: $background;
+}

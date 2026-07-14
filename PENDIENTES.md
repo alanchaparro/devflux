@@ -2,7 +2,7 @@
 
 > Documento de continuidad para terminar el rediseño de DevFlux como una experiencia guiada y simple.
 >
-> Última actualización: 2026-07-13
+> Última actualización: 2026-07-14
 
 ## Objetivo de UX
 
@@ -55,11 +55,11 @@ La experiencia principal no debe exigir que la persona entienda roles, proveedor
 
 **Meta:** que un usuario no técnico pueda entender qué se creó y navegarlo sin conocer la estructura interna.
 
-- [ ] Reemplazar la lista plana por árbol de archivos y carpetas.
-- [ ] Mostrar estado por archivo: `Nuevo`, `Modificado`, `Revisado`.
-- [ ] Permitir alternar claramente entre resultado final y diff cuando ambos existan.
-- [ ] Agregar acciones seguras y explícitas: copiar contenido y abrir archivo/carpeta.
-- [ ] Mantener el inspector oculto hasta que haya archivos reales.
+- [x] Reemplazar la lista plana por árbol de archivos y carpetas.
+- [x] Mostrar estado por archivo: `Nuevo`, `Modificado`, `Revisado`.
+- [x] Permitir alternar claramente entre resultado final y diff cuando ambos existan.
+- [x] Agregar acciones seguras y explícitas: copiar contenido y abrir archivo/carpeta.
+- [x] Mantener el inspector oculto hasta que haya archivos reales.
 
 **Archivos probables:**
 
@@ -75,10 +75,10 @@ La experiencia principal no debe exigir que la persona entienda roles, proveedor
 
 **Meta:** que el cierre de un proyecto tenga un siguiente paso directo.
 
-- [ ] Agregar acción/atajo visible para `Pedir una mejora`.
-- [ ] Volver al input principal sin perder la carpeta activa.
-- [ ] Enfocar el input y mostrar un copy concreto, por ejemplo: “¿Qué querés cambiar de este proyecto?”.
-- [ ] Enviar la instrucción como modificación del proyecto activo, no como proyecto nuevo.
+- [x] Agregar acción/atajo visible para `Pedir una mejora`.
+- [x] Volver al input principal sin perder la carpeta activa.
+- [x] Enfocar el input y mostrar un copy concreto, por ejemplo: “¿Qué querés cambiar de este proyecto?”.
+- [x] Enviar la instrucción como modificación del proyecto activo, no como proyecto nuevo.
 
 **Archivos probables:**
 
@@ -93,10 +93,10 @@ La experiencia principal no debe exigir que la persona entienda roles, proveedor
 
 **Meta:** reemplazar sesiones técnicas por una lista de proyectos que se pueda continuar.
 
-- [ ] Diseñar una tarjeta/lista de recientes con nombre, cantidad de archivos y fecha.
-- [ ] Agregar acción `Continuar`.
-- [ ] Al continuar, restaurar la carpeta activa y mostrar el inspector sólo si hay archivos.
-- [ ] Mantener detalles de sesión internos fuera de la vista principal.
+- [x] Diseñar una tarjeta/lista de recientes con nombre, cantidad de archivos y fecha.
+- [x] Agregar acción `Continuar`.
+- [x] Al continuar, restaurar la carpeta activa y mostrar el inspector sólo si hay archivos.
+- [x] Mantener detalles de sesión internos fuera de la vista principal.
 
 **Archivos a investigar/modificar:**
 
@@ -113,10 +113,10 @@ La experiencia principal no debe exigir que la persona entienda roles, proveedor
 
 **Meta:** que Ajustes no compita con el flujo de crear.
 
-- [ ] Mantener proveedor/modelo/diagnóstico bajo una superficie avanzada discreta.
-- [ ] Revisar el selector de temas: implementar 2–3 temas que cambien realmente la interfaz o retirar temporalmente la opción.
-- [ ] Eliminar opciones nominales o redundantes del menú principal.
-- [ ] Verificar navegación keyboard-first y retorno claro a Inicio.
+- [x] Mantener proveedor/modelo/diagnóstico bajo una superficie avanzada discreta.
+- [x] Revisar el selector de temas: implementar 2–3 temas que cambien realmente la interfaz o retirar temporalmente la opción.
+- [x] Eliminar opciones nominales o redundantes del menú principal.
+- [x] Verificar navegación keyboard-first y retorno claro a Inicio.
 
 **Archivos probables:**
 
@@ -130,13 +130,13 @@ La experiencia principal no debe exigir que la persona entienda roles, proveedor
 
 **Meta:** verificar el recorrido completo, no sólo funciones aisladas.
 
-- [ ] Prueba guiada: Inicio → Preparar → Crear → Listo.
-- [ ] Prueba de cancelación durante Crear.
-- [ ] Prueba de abrir proyecto y ver código.
-- [ ] Prueba de pedir una mejora sobre el proyecto activo.
-- [ ] Prueba de reabrir un proyecto reciente.
-- [ ] Revisión visual manual de la TUI antes de declarar terminado el rediseño.
-- [ ] Ejecutar `python -m pytest -q` y `python -m compileall -q devflux`.
+- [x] Prueba guiada: Inicio → Preparar → Crear → Listo.
+- [x] Prueba de cancelación durante Crear.
+- [x] Prueba de abrir proyecto y ver código.
+- [x] Prueba de pedir una mejora sobre el proyecto activo.
+- [x] Prueba de reabrir un proyecto reciente.
+- [x] Revisión visual manual de la TUI antes de declarar terminado el rediseño.
+- [x] Ejecutar `python -m pytest -q` y `python -m compileall -q devflux`.
 
 ---
 

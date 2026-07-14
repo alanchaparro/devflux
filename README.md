@@ -55,6 +55,8 @@ Cada creación o modificación confirmada recorre internamente el equipo-dev com
 
 El panel derecho muestra los archivos funcionales creados o modificados y sus diferencias. DevFlux filtra documentos e insumos internos como `PRD.md`, `architecture.md`, `plan.md`, `plan.yaml`, `plan.yml`, `main.md`, `output.html`, Markdown y diagramas Mermaid: no los escribe ni los muestra como resultado del pedido.
 
+Atajos útiles al terminar: **Ctrl+O** abre la carpeta activa, **Ctrl+E** muestra el inspector de código y **Ctrl+R** pide una mejora sobre el proyecto activo sin perder la carpeta.
+
 Los diagnósticos, respuestas crudas y checkpoints por rol (`state.json`) no se guardan dentro del proyecto: se aíslan en `~/.devflux/runs/<run-id>/`. El chat normal no expone esos detalles internos.
 
 ## Desarrollo y validación
